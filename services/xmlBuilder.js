@@ -109,8 +109,46 @@ const CSCartXMLBuilder = (function() {
       xml += `      <!-- Supplier Price: ${formatPrice(product.supplier_price)} -->\n`;
     }
     
+    // Reviews export (stored in custom field or as separate data)
+    if (product.reviews && product.reviews.length > 0) {
+      xml += '      <reviews>\n';
+      product.reviews.forEach(review => {
+        xml += buildReviewNode(review);
+      });
+      xml += '      </reviews>\n';
+    }
+    
     xml += '    </product>\n';
     
+    return xml;
+  }
+  
+  /**
+   * Build single review XML node
+   */
+  function buildReviewNode(review) {
+    let xml = '        <review>\n';
+    
+    if (review.author) {
+      xml += `          <author>${escapeXml(review.author)}</author>\n`;
+    }
+    if (review.rating) {
+      xml += `          <rating>${parseInt(review.rating)}</rating>\n`;
+    }
+    if (review.date) {
+      xml += `          <date>${escapeXml(review.date)}</date>\n`;
+    }
+    if (review.text) {
+      xml += `          <text><![CDATA[${review.text}]]></text>\n`;
+    }
+    if (review.country) {
+      xml += `          <country>${escapeXml(review.country)}</country>\n`;
+    }
+    if (review.images && review.images.length > 0) {
+      xml += `          <images>${review.images.map(escapeXml).join('///')}</images>\n`;
+    }
+    
+    xml += '        </review>\n';
     return xml;
   }
 
@@ -222,6 +260,7 @@ const CSCartXMLBuilder = (function() {
   return {
     build,
     buildProductNode,
+    buildReviewNode,
     buildOptions,
     formatCategory,
     formatImages,

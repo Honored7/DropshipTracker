@@ -178,6 +178,16 @@
     $('#exportCatalogCsvBtn').on('click', () => exportCatalog('csv'));
     $('#checkPricesBtn').on('click', checkPrices);
     $('#syncCatalogDriveBtn').on('click', syncCatalogToDrive);
+    
+    // Bulk selection buttons
+    $('#selectAllBtn').on('click', selectAllProducts);
+    $('#deselectAllBtn').on('click', deselectAllProducts);
+    $('#invertSelectionBtn').on('click', invertSelection);
+    $('#clearSelectionBtn').on('click', deselectAllProducts);
+    $('[data-select-filter]').on('click', function(e) {
+      e.preventDefault();
+      selectByFilter($(this).data('select-filter'));
+    });
 
     // === SUPPLIERS TAB ===
     
@@ -589,6 +599,97 @@
     
     state.selectedProducts = selected.filter(Boolean);
     $('#deleteSelectedBtn').prop('disabled', selected.length === 0);
+    
+    // Update selection status display
+    if (state.selectedProducts.length > 0) {
+      $('#selectionStatus').show();
+      $('#selectionCount').text(state.selectedProducts.length);
+    } else {
+      $('#selectionStatus').hide();
+    }
+  }
+  
+  /**
+   * Select all products in catalog
+   */
+  function selectAllProducts() {
+    const data = state.catalogTable.getData();
+    data.forEach((row, index) => {
+      state.catalogTable.setDataAtCell(index, 0, true, 'bulkSelect');
+    });
+    updateCatalogSelection();
+    showToast(`Selected ${data.length} products`, 'info');
+  }
+  
+  /**
+   * Deselect all products
+   */
+  function deselectAllProducts() {
+    const data = state.catalogTable.getData();
+    data.forEach((row, index) => {
+      state.catalogTable.setDataAtCell(index, 0, false, 'bulkSelect');
+    });
+    updateCatalogSelection();
+    showToast('Selection cleared', 'info');
+  }
+  
+  /**
+   * Invert current selection
+   */
+  function invertSelection() {
+    const data = state.catalogTable.getData();
+    data.forEach((row, index) => {
+      const current = row[0] === true;
+      state.catalogTable.setDataAtCell(index, 0, !current, 'bulkSelect');
+    });
+    updateCatalogSelection();
+    showToast('Selection inverted', 'info');
+  }
+  
+  /**
+   * Select products by filter criteria
+   */
+  function selectByFilter(filterType) {
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const weekMs = 7 * dayMs;
+    
+    let selected = 0;
+    
+    state.catalog.forEach((product, index) => {
+      let shouldSelect = false;
+      
+      switch (filterType) {
+        case 'aliexpress':
+          shouldSelect = product.domain?.toLowerCase().includes('aliexpress');
+          break;
+        case 'alibaba':
+          shouldSelect = product.domain?.toLowerCase().includes('alibaba');
+          break;
+        case 'has-reviews':
+          shouldSelect = product.reviews && product.reviews.length > 0;
+          break;
+        case 'has-variants':
+          shouldSelect = product.variants && product.variants.length > 0;
+          break;
+        case 'today':
+          shouldSelect = product.addedAt && (now - product.addedAt) < dayMs;
+          break;
+        case 'week':
+          shouldSelect = product.addedAt && (now - product.addedAt) < weekMs;
+          break;
+        default:
+          shouldSelect = false;
+      }
+      
+      if (shouldSelect) {
+        state.catalogTable.setDataAtCell(index, 0, true, 'bulkSelect');
+        selected++;
+      }
+    });
+    
+    updateCatalogSelection();
+    showToast(`Selected ${selected} products matching "${filterType}"`, 'info');
   }
 
   function addToCatalog() {

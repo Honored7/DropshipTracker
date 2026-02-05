@@ -17,21 +17,70 @@
     'aliexpress.com': {
       productIdPattern: /\/item\/(\d+)\.html/,
       productIdAttr: 'data-product-id',
-      priceSelectors: ['.product-price-current', '.uniform-banner-box-price', '[class*="Price_price"]'],
-      titleSelectors: ['h1.product-title', 'h1[data-pl="product-title"]', '[class*="Title_title"]'],
-      imageSelectors: ['.images-view-item img', '.slider--img--src img', '[class*="Gallery"] img'],
-      variantSelectors: ['.sku-property-item', '[class*="Sku_property"]'],
-      reviewSelectors: ['.feedback-item', '[class*="Review_item"]'],
-      shippingSelectors: ['.product-shipping', '[class*="Shipping_content"]']
+      // Updated selectors for 2026 AliExpress structure
+      titleSelectors: [
+        'h1[data-pl="product-title"]',
+        '.product-title-text',
+        'h1.pdp-title',
+        '[class*="ProductTitle--text"]',
+        '[class*="title--wrap"] h1',
+        '[class*="HalfLayout--title"]',
+        '.product-title',
+        'h1'
+      ],
+      priceSelectors: [
+        '[class*="Price--currentPriceText"]',
+        '[class*="es--wrap--"] [class*="es--char--"]',
+        '.product-price-current span',
+        '[class*="uniform-banner-box-price"]',
+        '[class*="price"] [class*="current"]',
+        '.product-price-value'
+      ],
+      // Get ALL images, not just first
+      imageSelectors: [
+        '.images-view-list img',
+        '[class*="slider--wrap"] img',
+        '[class*="Gallery"] img[src*="aliexpress"]',
+        '.pdp-info-image img',
+        '[class*="image-view"] img'
+      ],
+      variantSelectors: [
+        '.sku-property',
+        '[class*="Sku--property"]',
+        '[class*="skuItem"]',
+        '[class*="sku-item"]'
+      ],
+      reviewSelectors: [
+        '.feedback-item',
+        '[class*="Review--wrap"]',
+        '[class*="reviewItem"]',
+        '[class*="review-item"]'
+      ],
+      shippingSelectors: ['.product-shipping', '[class*="Shipping"]', '[class*="delivery"]']
     },
     'alibaba.com': {
       productIdPattern: /\/product\/(\d+)\.html/,
-      priceSelectors: ['.ma-ref-price', '.price-original', '[class*="price"]'],
-      titleSelectors: ['h1.ma-title', '.detail-title', 'h1[class*="title"]'],
-      imageSelectors: ['.detail-gallery-turn img', '.main-image img'],
-      variantSelectors: ['.sku-attr-item', '.obj-attr-item'],
-      reviewSelectors: ['.rating-item'],
-      shippingSelectors: ['.shipping-content']
+      titleSelectors: [
+        'h1.ma-title',
+        '.detail-title',
+        'h1[class*="title"]',
+        '.module-pdp-title h1'
+      ],
+      priceSelectors: [
+        '.ma-ref-price',
+        '.price-original',
+        '[class*="price"]',
+        '.module-pdp-price'
+      ],
+      imageSelectors: [
+        '.detail-gallery-turn img',
+        '.main-image img',
+        '[class*="gallery"] img',
+        '.thumb-list img'
+      ],
+      variantSelectors: ['.sku-attr-item', '.obj-attr-item', '[class*="sku-prop"]'],
+      reviewSelectors: ['.rating-item', '[class*="review"]'],
+      shippingSelectors: ['.shipping-content', '[class*="logistics"]']
     }
   };
   
@@ -382,64 +431,288 @@
       extractedAt: Date.now()
     };
     
-    // Try site-specific selectors first
+    // Try JSON-LD structured data FIRST (most reliable)
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const jsonLd of jsonLdScripts) {
+      try {
+        const data = JSON.parse(jsonLd.textContent);
+        const prod = data['@type'] === 'Product' ? data : (data.product || null);
+        if (prod) {
+          product.title = prod.name;
+          product.description = prod.description;
+          product.price = prod.offers?.price || prod.offers?.lowPrice;
+          product.currency = prod.offers?.priceCurrency;
+          product.sku = prod.sku;
+          product.brand = prod.brand?.name || prod.brand;
+          if (prod.image) {
+            product.images = Array.isArray(prod.image) ? prod.image : [prod.image];
+          }
+          break;
+        }
+      } catch (e) {}
+    }
+    
+    // Try meta tags for price
+    if (!product.price) {
+      const priceMeta = document.querySelector('meta[property="product:price:amount"], meta[itemprop="price"], meta[name="price"]');
+      if (priceMeta) {
+        product.price = priceMeta.content;
+      }
+    }
+    
+    // Try site-specific selectors
     if (config) {
-      product.title = trySelectors(config.titleSelectors);
-      product.price = trySelectors(config.priceSelectors);
-      product.images = trySelectorsAll(config.imageSelectors, 'src');
-      product.variants = extractVariants(config.variantSelectors);
+      if (!product.title) product.title = trySelectors(config.titleSelectors);
+      if (!product.price) product.price = trySelectors(config.priceSelectors);
       product.shipping = trySelectors(config.shippingSelectors);
     }
     
-    // Fallback to generic extraction
+    // Fallback title from h1 (but avoid discount/promo text)
     if (!product.title) {
-      product.title = document.querySelector('h1')?.textContent?.trim();
-    }
-    
-    if (!product.price) {
-      // Look for price patterns
-      const pricePattern = /[\$€£¥]\s*[\d,]+\.?\d*/;
-      const priceElements = document.querySelectorAll('[class*="price"], [class*="Price"]');
-      for (const el of priceElements) {
-        const text = el.textContent;
-        const match = text.match(pricePattern);
-        if (match) {
-          product.price = match[0];
+      const h1s = document.querySelectorAll('h1');
+      for (const h1 of h1s) {
+        const text = h1.textContent?.trim();
+        // Skip if looks like discount text
+        if (text && text.length > 10 && !text.match(/^\d+%|off|save|discount/i)) {
+          product.title = text;
           break;
         }
       }
     }
     
-    if (!product.images || product.images.length === 0) {
-      product.images = Array.from(document.querySelectorAll('img[src*="product"], img[src*="item"]'))
-        .map(img => img.src)
-        .filter(src => src && !src.includes('avatar') && !src.includes('logo'))
-        .slice(0, 10);
+    // Better price extraction
+    if (!product.price) {
+      const pricePatterns = [
+        /[\$€£¥₦]\s*[\d,]+\.?\d*/g,
+        /[\d,]+\.?\d*\s*[\$€£¥₦]/g,
+        /NGN\s*[\d,]+\.?\d*/gi,
+        /USD\s*[\d,]+\.?\d*/gi
+      ];
+      const priceElements = document.querySelectorAll('[class*="price" i]:not([class*="compare"]):not([class*="original"]):not([class*="old"])');
+      
+      outer: for (const el of priceElements) {
+        // Skip if inside a "was price" or "original price" container
+        if (el.closest('[class*="original"], [class*="was"], [class*="old"], [class*="compare"]')) continue;
+        
+        const text = el.textContent;
+        for (const pattern of pricePatterns) {
+          const matches = text.match(pattern);
+          if (matches) {
+            for (const match of matches) {
+              const num = parseFloat(match.replace(/[^\d.]/g, ''));
+              if (num > 1 && num < 1000000) {
+                product.price = num;
+                product.priceRaw = match;
+                break outer;
+              }
+            }
+          }
+        }
+      }
     }
     
-    // Try to get description
-    product.description = document.querySelector(
-      '[class*="description"], [class*="Description"], #product-description, .product-description'
-    )?.innerHTML;
+    // Extract ALL images
+    const imageUrls = new Set();
     
-    // Try JSON-LD structured data
-    const jsonLd = document.querySelector('script[type="application/ld+json"]');
-    if (jsonLd) {
-      try {
-        const data = JSON.parse(jsonLd.textContent);
-        if (data['@type'] === 'Product' || data.product) {
-          const prod = data.product || data;
-          product.title = product.title || prod.name;
-          product.description = product.description || prod.description;
-          product.price = product.price || prod.offers?.price;
-          product.currency = prod.offers?.priceCurrency;
-          product.sku = prod.sku;
-          product.brand = prod.brand?.name || prod.brand;
+    // Strategy 1: Site-specific selectors
+    if (config && config.imageSelectors) {
+      for (const selector of config.imageSelectors) {
+        try {
+          document.querySelectorAll(selector).forEach(img => {
+            let src = img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
+            if (src) {
+              src = cleanImageUrl(src);
+              if (isValidProductImage(src)) imageUrls.add(src);
+            }
+          });
+        } catch(e) {}
+      }
+    }
+    
+    // Strategy 2: Gallery/carousel images
+    document.querySelectorAll('[class*="gallery"] img, [class*="Gallery"] img, .images-view-list img, [class*="slider"] img, [class*="carousel"] img, [class*="thumb"] img').forEach(img => {
+      let src = img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
+      if (src) {
+        src = cleanImageUrl(src);
+        if (isValidProductImage(src)) imageUrls.add(src);
+      }
+    });
+    
+    // Strategy 3: Large product images
+    document.querySelectorAll('img').forEach(img => {
+      if (img.width > 200 || img.height > 200) {
+        let src = img.src || img.getAttribute('data-src');
+        if (src) {
+          src = cleanImageUrl(src);
+          if (isValidProductImage(src)) imageUrls.add(src);
         }
-      } catch (e) {}
+      }
+    });
+    
+    product.images = Array.from(imageUrls).slice(0, 15);
+    
+    // Extract variants with full details
+    product.variantGroups = extractVariantGroups(config);
+    product.variants = product.variantGroups.allVariants || [];
+    
+    // Extract reviews
+    product.reviews = extractReviewsData(config);
+    
+    // Get description
+    if (!product.description) {
+      const descEl = document.querySelector(
+        '[class*="description"], [class*="Description"], #product-description, .product-description, [class*="detail-desc"]'
+      );
+      if (descEl) {
+        product.description = descEl.innerHTML;
+        product.descriptionText = descEl.textContent?.trim();
+      }
     }
     
     callback(product);
+  }
+  
+  /**
+   * Clean image URL - convert thumbnail to full size
+   */
+  function cleanImageUrl(src) {
+    if (!src) return '';
+    // Remove size suffixes
+    return src
+      .replace(/_\d+x\d+[^.]*\./g, '.')
+      .replace(/\/_[^/]*\.webp/, '.jpg')
+      .replace(/_Q\d+\.jpg/, '.jpg')
+      .replace(/\.jpg_\d+x\d+.*$/, '.jpg')
+      .replace(/\?.*$/, ''); // Remove query params for deduplication
+  }
+  
+  /**
+   * Check if URL is a valid product image
+   */
+  function isValidProductImage(src) {
+    if (!src || !src.includes('http')) return false;
+    const exclude = ['avatar', 'logo', 'icon', 'sprite', 'banner', 'flag', 'badge', 'loading', 'placeholder'];
+    const lower = src.toLowerCase();
+    return !exclude.some(ex => lower.includes(ex)) && (lower.includes('product') || lower.includes('item') || lower.includes('aliexpress') || lower.includes('alibaba') || src.match(/\.(jpg|jpeg|png|webp)/i));
+  }
+  
+  /**
+   * Extract variant groups (Color, Size, etc.) with details
+   */
+  function extractVariantGroups(config) {
+    const groups = {};
+    const allVariants = [];
+    
+    // Find variant property groups
+    const groupSelectors = [
+      '.sku-property',
+      '[class*="Sku--property"]',
+      '[class*="sku-property"]',
+      '[class*="product-sku"]',
+      '.sku-attr'
+    ];
+    
+    for (const selector of groupSelectors) {
+      try {
+        document.querySelectorAll(selector).forEach(group => {
+          const groupName = group.querySelector('[class*="title"], [class*="name"], .sku-title, label')?.textContent?.trim()?.replace(':', '') || 'Option';
+          
+          if (!groups[groupName]) groups[groupName] = [];
+          
+          group.querySelectorAll('[class*="item"], .sku-property-item, button[class*="sku"], [class*="value"]').forEach(item => {
+            // Skip if it's the title element
+            if (item.querySelector('[class*="title"]')) return;
+            
+            const variant = {
+              type: groupName,
+              name: item.getAttribute('title') || item.getAttribute('data-spm-anchor-id')?.split('.').pop() || item.textContent?.trim(),
+              value: item.getAttribute('data-value') || item.getAttribute('data-sku-id') || item.getAttribute('data-id'),
+              image: item.querySelector('img')?.src || item.style.backgroundImage?.replace(/url\(['"]?|['"]?\)/g, ''),
+              selected: item.classList.contains('selected') || item.classList.contains('active') || item.hasAttribute('checked'),
+              available: !item.classList.contains('disabled') && !item.classList.contains('unavailable'),
+              priceModifier: item.getAttribute('data-price') || null
+            };
+            
+            if (variant.name && variant.name.length < 100) {
+              groups[groupName].push(variant);
+              allVariants.push(variant);
+            }
+          });
+        });
+        
+        if (Object.keys(groups).length > 0) break;
+      } catch(e) {}
+    }
+    
+    return { groups, allVariants };
+  }
+  
+  /**
+   * Extract reviews data
+   */
+  function extractReviewsData(config) {
+    const reviews = [];
+    
+    const reviewSelectors = config?.reviewSelectors || [
+      '.feedback-item',
+      '[class*="review-item"]',
+      '[class*="Review--wrap"]',
+      '.review-content',
+      '[class*="reviewItem"]'
+    ];
+    
+    for (const selector of reviewSelectors) {
+      try {
+        document.querySelectorAll(selector).forEach(el => {
+          const review = {
+            author: el.querySelector('[class*="user"], [class*="name"], .user-name, [class*="buyer"]')?.textContent?.trim(),
+            rating: extractRating(el),
+            date: el.querySelector('[class*="date"], time, [class*="time"]')?.textContent?.trim(),
+            text: el.querySelector('[class*="content"], [class*="text"], .review-content, [class*="comment"]')?.textContent?.trim(),
+            images: Array.from(el.querySelectorAll('img')).map(img => img.src).filter(s => s && !s.includes('avatar') && !s.includes('icon')),
+            country: el.querySelector('[class*="country"], [class*="flag"]')?.getAttribute('title') || el.querySelector('[class*="country"]')?.textContent?.trim()
+          };
+          
+          if (review.text || review.rating) {
+            reviews.push(review);
+          }
+        });
+        
+        if (reviews.length > 0) break;
+      } catch(e) {}
+    }
+    
+    return reviews;
+  }
+  
+  /**
+   * Extract star rating from element
+   */
+  function extractRating(element) {
+    // Try star count (filled stars)
+    const stars = element.querySelectorAll('[class*="star"][class*="full"], .star-icon.fill, [class*="star-on"], [class*="starFilled"]');
+    if (stars.length > 0 && stars.length <= 5) return stars.length;
+    
+    // Try percentage width
+    const percent = element.querySelector('[style*="width"]');
+    if (percent && percent.style.width) {
+      const match = percent.style.width.match(/(\d+)/);
+      if (match) return Math.round(parseInt(match[1]) / 20);
+    }
+    
+    // Try aria-label
+    const ariaRating = element.querySelector('[aria-label*="star"], [aria-label*="rating"]');
+    if (ariaRating) {
+      const match = ariaRating.getAttribute('aria-label').match(/(\d+(?:\.\d+)?)/);
+      if (match) return parseFloat(match[1]);
+    }
+    
+    // Try text pattern
+    const text = element.textContent;
+    const match = text.match(/(\d+(?:\.\d+)?)\s*(?:star|★|\/\s*5)/i);
+    if (match) return parseFloat(match[1]);
+    
+    return null;
   }
   
   /**
