@@ -80,7 +80,27 @@
       autoWrapRow: true,
       autoWrapCol: true,
       licenseKey: 'non-commercial-and-evaluation',
-      contextMenu: true,
+      contextMenu: {
+        items: {
+          'preview': {
+            name: '👁️ Preview',
+            callback: function(key, selection) {
+              const row = selection[0].start.row;
+              previewScrapedRow(row);
+            }
+          },
+          'delete_row': {
+            name: '🗑️ Delete Row',
+            callback: function(key, selection) {
+              const rows = selection.map(s => s.start.row).sort((a, b) => b - a);
+              rows.forEach(row => deleteScrapedRow(row));
+            }
+          },
+          'separator': '---------',
+          'copy': { name: 'Copy' },
+          'cut': { name: 'Cut' }
+        }
+      },
       manualColumnResize: true,
       columnSorting: true,
       filters: true,
@@ -98,16 +118,28 @@
     
     state.catalogTable = new Handsontable(container, {
       data: [],
-      colHeaders: ['✓', 'Product Code', 'Title', 'Supplier', 'Supplier Price', 'Your Price', 'Stock', 'Last Checked'],
+      colHeaders: ['✓', 'Product Code', 'Title', 'Supplier', 'Supplier Price', 'Your Price', 'Stock', 'Last Checked', 'Actions'],
       columns: [
-        { type: 'checkbox', className: 'htCenter' },
-        { data: 'productCode', readOnly: true },
-        { data: 'title', readOnly: true },
-        { data: 'domain', readOnly: true },
-        { data: 'supplierPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, readOnly: true },
-        { data: 'yourPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' } },
-        { data: 'stock', type: 'numeric', readOnly: true },
-        { data: 'lastCheckedFormatted', readOnly: true }
+        { type: 'checkbox', className: 'htCenter', width: 30 },
+        { data: 'productCode', readOnly: true, width: 100 },
+        { data: 'title', readOnly: true, width: 200 },
+        { data: 'domain', readOnly: true, width: 100 },
+        { data: 'supplierPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, readOnly: true, width: 90 },
+        { data: 'yourPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, width: 90 },
+        { data: 'stock', type: 'numeric', readOnly: true, width: 60 },
+        { data: 'lastCheckedFormatted', readOnly: true, width: 90 },
+        { 
+          data: 'actions',
+          readOnly: true,
+          width: 70,
+          renderer: function(instance, td, row, col, prop, value, cellProperties) {
+            td.innerHTML = '<div class="row-actions">' +
+              '<button class="btn btn-xs btn-default btn-preview" onclick="window.previewCatalogRow(' + row + ')" title="Preview">👁️</button>' +
+              '<button class="btn btn-xs btn-default btn-delete" onclick="window.deleteCatalogRow(' + row + ')" title="Delete">🗑️</button>' +
+              '</div>';
+            return td;
+          }
+        }
       ],
       height: 350,
       stretchH: 'all',
@@ -115,6 +147,26 @@
       manualColumnResize: true,
       columnSorting: true,
       filters: true,
+      contextMenu: {
+        items: {
+          'preview': {
+            name: '👁️ Preview',
+            callback: function(key, selection) {
+              const row = selection[0].start.row;
+              previewCatalogRow(row);
+            }
+          },
+          'delete_row': {
+            name: '🗑️ Delete',
+            callback: function(key, selection) {
+              const rows = selection.map(s => s.start.row).sort((a, b) => b - a);
+              rows.forEach(row => deleteCatalogRow(row));
+            }
+          },
+          'separator': '---------',
+          'copy': { name: 'Copy' }
+        }
+      },
       afterChange: function(changes, source) {
         if (source === 'edit' && changes) {
           changes.forEach(([row, prop, oldVal, newVal]) => {
@@ -132,6 +184,10 @@
       }
     });
   }
+  
+  // Expose functions globally for inline onclick handlers
+  window.previewCatalogRow = function(row) { previewCatalogRow(row); };
+  window.deleteCatalogRow = function(row) { deleteCatalogRow(row); };
 
   // ============================================
   // EVENT BINDINGS
@@ -155,6 +211,7 @@
     $('#crawlBtn').on('click', startCrawl);
     $('#stopCrawlBtn').on('click', stopCrawl);
     $('#addToCatalogBtn').on('click', addToCatalog);
+    $('#clearScrapedBtn').on('click', clearAllScrapedData);
     
     // Export buttons
     $('#exportXmlBtn').on('click', () => exportCSCart('xml'));
@@ -174,6 +231,7 @@
       filterCatalog($(this).data('filter'));
     });
     $('#deleteSelectedBtn').on('click', deleteSelectedProducts);
+    $('#clearCatalogBtn').on('click', clearEntireCatalog);
     $('#exportCatalogXmlBtn').on('click', () => exportCatalog('xml'));
     $('#exportCatalogCsvBtn').on('click', () => exportCatalog('csv'));
     $('#checkPricesBtn').on('click', checkPrices);
@@ -187,6 +245,12 @@
     $('[data-select-filter]').on('click', function(e) {
       e.preventDefault();
       selectByFilter($(this).data('select-filter'));
+    });
+    
+    // Preview modal
+    $('#previewDeleteBtn').on('click', deletePreviewedItem);
+    $('#previewModal').on('hidden.bs.modal', function() {
+      state.previewContext = null;
     });
 
     // === SUPPLIERS TAB ===
@@ -690,6 +754,269 @@
     
     updateCatalogSelection();
     showToast(`Selected ${selected} products matching "${filterType}"`, 'info');
+  }
+
+  // ============================================
+  // PREVIEW & DELETE FUNCTIONS
+  // ============================================
+  
+  /**
+   * Preview scraped data row
+   */
+  function previewScrapedRow(rowIndex) {
+    if (rowIndex < 0 || rowIndex >= state.data.length) return;
+    
+    const row = state.data[rowIndex];
+    const rawRow = state.rawData[rowIndex] || {};
+    const combined = { ...rawRow, ...row };
+    
+    state.previewContext = { type: 'scraped', index: rowIndex };
+    
+    // Set title
+    $('#previewModalTitle').text(combined.Title || combined.title || combined['Product Name'] || `Row ${rowIndex + 1}`);
+    
+    // Set image
+    const imageUrl = combined.Image || combined.image || combined.images?.[0] || '';
+    if (imageUrl) {
+      $('#previewImage').html(`<img src="${imageUrl}" alt="Product">`);
+    } else {
+      $('#previewImage').html('<div class="text-muted text-center"><span class="glyphicon glyphicon-picture" style="font-size:60px;color:#ccc;"></span><br>No image</div>');
+    }
+    
+    // Set gallery
+    const images = combined.images || [];
+    if (images.length > 1) {
+      $('#previewGallery').html(images.slice(0, 10).map((img, i) => 
+        `<img src="${img}" alt="Image ${i+1}" onclick="$('#previewImage img').attr('src','${img}')" class="${i===0?'active':''}">`
+      ).join(''));
+    } else {
+      $('#previewGallery').empty();
+    }
+    
+    // Build details
+    let detailsHtml = '';
+    const skipFields = ['images', 'image', '_element', '_html'];
+    
+    Object.entries(combined).forEach(([key, value]) => {
+      if (skipFields.includes(key.toLowerCase()) || !value) return;
+      
+      let displayValue = value;
+      if (Array.isArray(value)) {
+        displayValue = value.length + ' items';
+      } else if (typeof value === 'object') {
+        displayValue = JSON.stringify(value).substring(0, 100) + '...';
+      }
+      
+      const isPrice = key.toLowerCase().includes('price');
+      detailsHtml += `<div class="detail-row">
+        <span class="detail-label">${key}:</span>
+        <span class="detail-value${isPrice ? ' price' : ''}">${displayValue}</span>
+      </div>`;
+    });
+    
+    $('#previewDetails').html(detailsHtml || '<p class="text-muted">No details available</p>');
+    
+    // Set source link
+    const url = combined.url || combined.URL || combined.Link || state.tabUrl;
+    if (url) {
+      $('#previewSourceLink').attr('href', url).show();
+    } else {
+      $('#previewSourceLink').hide();
+    }
+    
+    $('#previewModal').modal('show');
+  }
+  
+  /**
+   * Preview catalog product
+   */
+  function previewCatalogRow(rowIndex) {
+    if (rowIndex < 0 || rowIndex >= state.catalog.length) return;
+    
+    const product = state.catalog[rowIndex];
+    
+    state.previewContext = { type: 'catalog', index: rowIndex, productCode: product.productCode };
+    
+    // Set title
+    $('#previewModalTitle').text(product.title || product.productCode);
+    
+    // Set image
+    const images = product.images || [];
+    if (images.length > 0) {
+      $('#previewImage').html(`<img src="${images[0]}" alt="Product">`);
+    } else {
+      $('#previewImage').html('<div class="text-muted text-center"><span class="glyphicon glyphicon-picture" style="font-size:60px;color:#ccc;"></span><br>No image</div>');
+    }
+    
+    // Set gallery
+    if (images.length > 1) {
+      $('#previewGallery').html(images.slice(0, 10).map((img, i) => 
+        `<img src="${img}" alt="Image ${i+1}" onclick="$('#previewImage img').attr('src','${img}')" class="${i===0?'active':''}">`
+      ).join(''));
+    } else {
+      $('#previewGallery').empty();
+    }
+    
+    // Build details
+    let detailsHtml = `
+      <div class="detail-row">
+        <span class="detail-label">Product Code:</span>
+        <span class="detail-value">${product.productCode}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Supplier Price:</span>
+        <span class="detail-value price">$${(product.supplierPrice || 0).toFixed(2)}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Your Price:</span>
+        <span class="detail-value price">$${(product.yourPrice || 0).toFixed(2)}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Supplier:</span>
+        <span class="detail-value">${product.domain || 'Unknown'}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Stock:</span>
+        <span class="detail-value">${product.stock || 'Unknown'}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Added:</span>
+        <span class="detail-value">${product.addedAt ? new Date(product.addedAt).toLocaleString() : 'Unknown'}</span>
+      </div>
+    `;
+    
+    if (product.variants && product.variants.length > 0) {
+      detailsHtml += `<div class="detail-row">
+        <span class="detail-label">Variants:</span>
+        <span class="detail-value">${product.variants.length} options</span>
+      </div>`;
+    }
+    
+    if (product.reviews && product.reviews.length > 0) {
+      detailsHtml += `<div class="detail-row">
+        <span class="detail-label">Reviews:</span>
+        <span class="detail-value">${product.reviews.length} reviews</span>
+      </div>`;
+    }
+    
+    if (product.description) {
+      detailsHtml += `<div class="detail-row">
+        <span class="detail-label">Description:</span>
+        <span class="detail-value">${(product.descriptionText || product.description).substring(0, 200)}...</span>
+      </div>`;
+    }
+    
+    $('#previewDetails').html(detailsHtml);
+    
+    // Set source link
+    if (product.url) {
+      $('#previewSourceLink').attr('href', product.url).show();
+    } else {
+      $('#previewSourceLink').hide();
+    }
+    
+    $('#previewModal').modal('show');
+  }
+  
+  /**
+   * Delete single scraped row
+   */
+  function deleteScrapedRow(rowIndex) {
+    if (rowIndex < 0 || rowIndex >= state.data.length) return;
+    
+    state.data.splice(rowIndex, 1);
+    state.rawData.splice(rowIndex, 1);
+    
+    state.dataTable.loadData(state.data);
+    updateExportButtons();
+    $('#rowCount').text(state.data.length);
+    showToast('Row deleted', 'info');
+  }
+  
+  /**
+   * Delete single catalog product
+   */
+  function deleteCatalogRow(rowIndex) {
+    if (rowIndex < 0 || rowIndex >= state.catalog.length) return;
+    
+    const product = state.catalog[rowIndex];
+    
+    chrome.runtime.sendMessage({
+      action: 'removeFromCatalog',
+      productCode: product.productCode
+    }, () => {
+      state.catalog.splice(rowIndex, 1);
+      refreshCatalogTable();
+      updateCatalogCount();
+      showToast('Product deleted', 'info');
+    });
+  }
+  
+  /**
+   * Delete item from preview modal
+   */
+  function deletePreviewedItem() {
+    if (!state.previewContext) return;
+    
+    if (state.previewContext.type === 'scraped') {
+      deleteScrapedRow(state.previewContext.index);
+    } else if (state.previewContext.type === 'catalog') {
+      deleteCatalogRow(state.previewContext.index);
+    }
+    
+    $('#previewModal').modal('hide');
+  }
+  
+  /**
+   * Clear all scraped data
+   */
+  function clearAllScrapedData() {
+    if (state.data.length === 0) {
+      showToast('No scraped data to clear', 'info');
+      return;
+    }
+    
+    if (!confirm(`Clear all ${state.data.length} scraped rows? This cannot be undone.`)) {
+      return;
+    }
+    
+    state.data = [];
+    state.rawData = [];
+    state.fieldNames = [];
+    state.fieldMapping = {};
+    
+    state.dataTable.loadData([]);
+    updateExportButtons();
+    $('#rowCount').text('0');
+    $('#clearScrapedBtn').prop('disabled', true);
+    $('#fieldMappingSection').hide();
+    
+    showToast('All scraped data cleared', 'success');
+  }
+  
+  /**
+   * Clear entire catalog
+   */
+  function clearEntireCatalog() {
+    if (state.catalog.length === 0) {
+      showToast('Catalog is already empty', 'info');
+      return;
+    }
+    
+    if (!confirm(`Delete all ${state.catalog.length} products from catalog? This cannot be undone.`)) {
+      return;
+    }
+    
+    chrome.runtime.sendMessage({ action: 'clearCatalog' }, (response) => {
+      if (response?.success) {
+        state.catalog = [];
+        refreshCatalogTable();
+        updateCatalogCount();
+        showToast('Catalog cleared', 'success');
+      } else {
+        showToast('Failed to clear catalog', 'error');
+      }
+    });
   }
 
   function addToCatalog() {
@@ -1249,6 +1576,8 @@
   function updateExportButtons() {
     const hasData = state.data.length > 0;
     $('#exportXmlBtn, #exportCsvBtn, #copyClipboardBtn, #downloadRawBtn').prop('disabled', !hasData);
+    $('#addToCatalogBtn').prop('disabled', !hasData);
+    $('#clearScrapedBtn').prop('disabled', !hasData);
   }
 
   function showToast(message, type = 'info') {

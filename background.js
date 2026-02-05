@@ -87,6 +87,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
       return true;
       
+    case 'removeFromCatalog':
+      deleteCatalogProducts([request.productCode]).then(result => {
+        sendResponse(result);
+      });
+      return true;
+      
+    case 'clearCatalog':
+      clearCatalog().then(result => {
+        sendResponse(result);
+      });
+      return true;
+      
     case 'getSettings':
       chrome.storage.local.get(['settings'], (data) => {
         sendResponse({ settings: data.settings || getDefaultSettings() });
@@ -186,6 +198,16 @@ async function deleteCatalogProducts(productCodes) {
     
     await chrome.storage.local.set({ catalog });
     return { success: true, deleted: initialCount - catalog.length };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Clear entire catalog
+async function clearCatalog() {
+  try {
+    await chrome.storage.local.set({ catalog: [] });
+    return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
   }

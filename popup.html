@@ -77,6 +77,11 @@
                   <span class="glyphicon glyphicon-download-alt"></span> Extract Product
                 </button>
               </div>
+              <div class="btn-group">
+                <button type="button" class="btn btn-danger" id="clearScrapedBtn" disabled title="Clear all scraped data">
+                  <span class="glyphicon glyphicon-trash"></span> Clear All
+                </button>
+              </div>
               <div class="btn-group pull-right">
                 <button type="button" class="btn btn-success" id="addToCatalogBtn" disabled>
                   <span class="glyphicon glyphicon-plus"></span> Add to Catalog
@@ -234,8 +239,13 @@
                 </ul>
               </div>
               <div class="btn-group">
-                <button type="button" class="btn btn-danger" id="deleteSelectedBtn" disabled>
+                <button type="button" class="btn btn-danger" id="deleteSelectedBtn" disabled title="Delete selected products">
                   <span class="glyphicon glyphicon-trash"></span>
+                </button>
+              </div>
+              <div class="btn-group">
+                <button type="button" class="btn btn-danger" id="clearCatalogBtn" title="Clear entire catalog">
+                  <span class="glyphicon glyphicon-remove-circle"></span> Clear All
                 </button>
               </div>
             </div>
@@ -577,6 +587,38 @@
   <!-- Toast Notification -->
   <div id="toast" class="toast">
     <span id="toastMessage"></span>
+  </div>
+
+  <!-- Preview Modal -->
+  <div class="modal fade" id="previewModal" tabindex="-1" role="dialog">
+    <div class="modal-dialog modal-lg" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <button type="button" class="close" data-dismiss="modal">&times;</button>
+          <h4 class="modal-title" id="previewModalTitle">Product Preview</h4>
+        </div>
+        <div class="modal-body">
+          <div class="row">
+            <div class="col-xs-4">
+              <div id="previewImage" class="preview-image-container"></div>
+              <div id="previewGallery" class="preview-gallery"></div>
+            </div>
+            <div class="col-xs-8">
+              <div id="previewDetails" class="preview-details"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <a href="#" id="previewSourceLink" class="btn btn-info" target="_blank">
+            <span class="glyphicon glyphicon-link"></span> Open Source
+          </a>
+          <button type="button" class="btn btn-danger" id="previewDeleteBtn">
+            <span class="glyphicon glyphicon-trash"></span> Delete
+          </button>
+          <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Scripts -->
