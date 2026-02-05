@@ -61,8 +61,12 @@ const CSCartMapper = (function() {
       status: catalogProduct.status || settings.defaultStatus || 'A',
       language: settings.language || 'en',
       brand: catalogProduct.brand || '',
-      meta_keywords: extractKeywords(catalogProduct.title),
-      meta_description: truncate(catalogProduct.title, 160),
+      meta_keywords: catalogProduct.meta_keywords || extractKeywords(catalogProduct.title),
+      meta_description: catalogProduct.meta_description || truncate(catalogProduct.title, 160),
+      // Reviews
+      rating: catalogProduct.rating || '',
+      review_count: catalogProduct.review_count || catalogProduct.reviewCount || '',
+      reviews: catalogProduct.reviews || '',
       // Supplier tracking
       supplier_url: catalogProduct.supplierUrl,
       supplier_price: catalogProduct.supplierPrice
@@ -77,7 +81,7 @@ const CSCartMapper = (function() {
   function toCSV(products) {
     if (!products || products.length === 0) return '';
     
-    // CS-Cart standard column order
+    // CS-Cart standard column order with reviews
     const columns = [
       'Product code',
       'Language',
@@ -91,7 +95,10 @@ const CSCartMapper = (function() {
       'Short description',
       'Full description',
       'Images',
-      'Features'
+      'Features',
+      'Rating',
+      'Review count',
+      'Reviews'
     ];
     
     const rows = [columns];
@@ -110,7 +117,10 @@ const CSCartMapper = (function() {
         csvEscape(p.short_description || ''),
         csvEscape(p.description || ''),
         csvEscape(p.images || ''),
-        p.brand ? `Brand: E[${p.brand}]` : ''
+        p.brand ? `Brand: E[${p.brand}]` : '',
+        p.rating || '',
+        p.review_count || '',
+        csvEscape(p.reviews || '')
       ]);
     });
     

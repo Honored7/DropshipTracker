@@ -361,16 +361,24 @@
       data[currentPath] = directText;
     }
     
-    // Get attributes
-    if (element.href) data[currentPath + ' @href'] = element.href;
-    if (element.src) data[currentPath + ' @src'] = element.src;
+    // Get attributes - but filter out tracking URLs
+    if (element.href && isValidProductUrl(element.href)) {
+      data[currentPath + ' @href'] = cleanProductUrl(element.href);
+    }
+    if (element.src && isValidImageUrl(element.src)) {
+      data[currentPath + ' @src'] = element.src;
+    }
     if (element.alt) data[currentPath + ' @alt'] = element.alt;
-    if (element.title) data[currentPath + ' @title'] = element.title;
+    if (element.title && element.title.length < 200) data[currentPath + ' @title'] = element.title;
     
-    // Get data attributes
+    // Get data attributes (but skip tracking/analytics data)
     for (const attr of element.attributes) {
-      if (attr.name.startsWith('data-') && attr.value) {
-        data[currentPath + ' @' + attr.name] = attr.value;
+      if (attr.name.startsWith('data-') && attr.value && attr.value.length < 500) {
+        // Skip tracking/analytics data attributes
+        const skipAttrs = ['data-spm', 'data-aplus', 'data-trace', 'data-log', 'data-track', 'data-beacon'];
+        if (!skipAttrs.some(s => attr.name.startsWith(s))) {
+          data[currentPath + ' @' + attr.name] = attr.value;
+        }
       }
     }
     
@@ -389,6 +397,84 @@
     }
     
     return data;
+  }
+  
+  /**
+   * Check if URL is a valid product URL (not tracking/redirect)
+   */
+  function isValidProductUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    
+    // Reject tracking/redirect URLs
+    const trackingPatterns = [
+      'click.alibaba.com',
+      'us-click.alibaba.com',
+      'click.aliexpress.com',
+      'ae-click.aliexpress.com',
+      'gw.alicdn.com/tps',
+      '/ci_bb',
+      '/ot=local',
+      'beacon.',
+      'tracker.',
+      'analytics.',
+      'ads.alibaba',
+      'ad.alibaba',
+      'click?',
+      'redirect?',
+      'track?'
+    ];
+    
+    const lower = url.toLowerCase();
+    if (trackingPatterns.some(pattern => lower.includes(pattern))) {
+      return false;
+    }
+    
+    // Must be a normal product URL
+    return url.startsWith('http') && (
+      url.includes('/item/') ||
+      url.includes('/product/') ||
+      url.includes('/dp/') ||
+      url.includes('.html') ||
+      url.includes('/p/')
+    );
+  }
+  
+  /**
+   * Clean product URL - extract real URL from redirect
+   */
+  function cleanProductUrl(url) {
+    if (!url) return '';
+    
+    // Try to extract real URL from redirect
+    try {
+      const urlObj = new URL(url);
+      const targetParam = urlObj.searchParams.get('url') || 
+                          urlObj.searchParams.get('target') ||
+                          urlObj.searchParams.get('redirect');
+      if (targetParam && targetParam.startsWith('http')) {
+        return decodeURIComponent(targetParam);
+      }
+    } catch(e) {}
+    
+    return url;
+  }
+  
+  /**
+   * Check if URL is a valid image URL
+   */
+  function isValidImageUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    if (!url.startsWith('http')) return false;
+    
+    // Reject tracking pixels and tiny images
+    const rejectPatterns = ['1x1', 'pixel', 'beacon', 'tracker', 'analytics', 'stat.'];
+    if (rejectPatterns.some(p => url.toLowerCase().includes(p))) return false;
+    
+    // Should be an image
+    return url.match(/\.(jpg|jpeg|png|gif|webp)/i) || 
+           url.includes('alicdn.com') || 
+           url.includes('imgur.') ||
+           url.includes('cloudfront.');
   }
   
   /**

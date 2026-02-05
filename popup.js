@@ -738,7 +738,12 @@
     { id: 'sku', label: 'SKU' },
     { id: 'url', label: 'Supplier URL' },
     { id: 'shipping', label: 'Shipping Info' },
-    { id: 'variants', label: 'Variants/Options' }
+    { id: 'variants', label: 'Variants/Options' },
+    { id: 'reviews', label: 'Reviews' },
+    { id: 'rating', label: 'Rating' },
+    { id: 'review_count', label: 'Review Count' },
+    { id: 'meta_keywords', label: 'Meta Keywords' },
+    { id: 'meta_description', label: 'Meta Description' }
   ];
 
   function showFieldMapping() {
@@ -789,6 +794,9 @@
     if (lower.includes('href') || lower.includes('url') || lower.includes('link')) return 'url';
     if (lower.includes('ship')) return 'shipping';
     if (lower.includes('variant') || lower.includes('option')) return 'variants';
+    if (lower.includes('review') && lower.includes('count')) return 'review_count';
+    if (lower.includes('review')) return 'reviews';
+    if (lower.includes('rating') || lower.includes('star')) return 'rating';
     
     return '';
   }
@@ -1263,7 +1271,14 @@
         domain: new URL(state.tabUrl || 'http://unknown').hostname,
         variants: getMappedValue('variants') || rawRow.Variants || '',
         shipping: getMappedValue('shipping') || rawRow.Shipping || '',
-        brand: getMappedValue('brand') || rawRow.Brand || ''
+        brand: getMappedValue('brand') || rawRow.Brand || '',
+        // Reviews data
+        rating: getMappedValue('rating') || rawRow.Rating || '',
+        review_count: getMappedValue('review_count') || rawRow.Reviews || rawRow['Review Count'] || '',
+        reviews: getMappedValue('reviews') || rawRow['Review Text'] || '',
+        // Meta data
+        meta_keywords: getMappedValue('meta_keywords') || '',
+        meta_description: getMappedValue('meta_description') || ''
       };
     });
     
