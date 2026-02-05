@@ -1,0 +1,402 @@
+/* DropshipTracker Popup Styles */
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  background-color: #f5f5f5;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+}
+
+/* Navbar */
+.navbar {
+  margin-bottom: 0;
+  border-radius: 0;
+  min-height: 40px;
+}
+
+.navbar-brand {
+  padding: 8px 15px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333 !important;
+}
+
+.navbar-brand img {
+  margin-top: -2px;
+}
+
+.navbar-text {
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+
+/* Sync Status */
+.sync-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 15px;
+}
+
+.sync-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #f0ad4e;
+}
+
+.sync-indicator.connected {
+  background-color: #5cb85c;
+}
+
+.sync-indicator.syncing {
+  background-color: #5bc0de;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Tabs */
+.nav-tabs {
+  background-color: #fff;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 0;
+}
+
+.nav-tabs > li > a {
+  border-radius: 0;
+  padding: 10px 20px;
+  color: #666;
+}
+
+.nav-tabs > li.active > a {
+  color: #337ab7;
+  font-weight: 500;
+}
+
+.nav-tabs > li > a .badge {
+  margin-left: 5px;
+  background-color: #5cb85c;
+}
+
+/* Tab Content */
+.tab-content {
+  background-color: #fff;
+  min-height: calc(100vh - 90px);
+}
+
+.tab-pane {
+  padding: 15px 0;
+}
+
+/* Scraper Tab */
+.scraper-controls {
+  margin-bottom: 10px;
+}
+
+.pagination-controls {
+  margin-bottom: 10px;
+}
+
+/* Status Bar */
+.status-bar {
+  background-color: #f9f9f9;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #666;
+}
+
+/* Data Preview */
+#dataPreview {
+  height: 300px;
+  border: 1px solid #ddd;
+  margin-bottom: 15px;
+  overflow: hidden;
+}
+
+/* Field Mapping Section */
+.field-mapping-section {
+  background-color: #f9f9f9;
+  padding: 15px;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+  margin-bottom: 15px;
+}
+
+.field-mapping-section h4 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  color: #333;
+}
+
+#fieldMappingGrid {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.mapping-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 8px;
+  background-color: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+}
+
+.mapping-row .source-field {
+  flex: 1;
+  font-family: monospace;
+  font-size: 11px;
+  color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mapping-row .arrow {
+  color: #999;
+}
+
+.mapping-row select {
+  width: 180px;
+}
+
+/* Export Section */
+.export-section {
+  padding-top: 15px;
+  border-top: 1px solid #e0e0e0;
+}
+
+/* Catalog Tab */
+.catalog-controls {
+  margin-bottom: 15px;
+}
+
+#catalogGrid {
+  height: 350px;
+  border: 1px solid #ddd;
+  margin-bottom: 15px;
+}
+
+.catalog-actions {
+  margin-bottom: 15px;
+}
+
+/* Catalog Stats */
+.catalog-stats {
+  margin-top: 15px;
+}
+
+.stat-box {
+  background-color: #f9f9f9;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+  padding: 15px;
+  text-align: center;
+}
+
+.stat-number {
+  font-size: 24px;
+  font-weight: 600;
+  color: #337ab7;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: #999;
+  text-transform: uppercase;
+}
+
+/* Suppliers Tab */
+.supplier-card {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 15px;
+  background-color: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+  margin-bottom: 10px;
+  transition: box-shadow 0.2s;
+}
+
+.supplier-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.supplier-icon img {
+  width: 32px;
+  height: 32px;
+}
+
+.supplier-info {
+  flex: 1;
+}
+
+.supplier-info h5 {
+  margin: 0 0 5px 0;
+  font-weight: 600;
+}
+
+.supplier-stats .badge {
+  background-color: #5cb85c;
+}
+
+/* Settings Tab */
+.panel {
+  margin-bottom: 15px;
+}
+
+.panel-heading h5 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.form-group {
+  margin-bottom: 12px;
+}
+
+.form-group label {
+  font-weight: 500;
+  margin-bottom: 5px;
+}
+
+.help-block {
+  font-size: 11px;
+  color: #999;
+  margin-top: 3px;
+}
+
+/* Toast Notification */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background-color: #333;
+  color: #fff;
+  padding: 12px 24px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: all 0.3s ease;
+  z-index: 9999;
+  max-width: 80%;
+  text-align: center;
+}
+
+.toast.show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.toast.success {
+  background-color: #5cb85c;
+}
+
+.toast.error {
+  background-color: #d9534f;
+}
+
+.toast.warning {
+  background-color: #f0ad4e;
+}
+
+/* Handsontable Customization */
+.handsontable {
+  font-size: 12px;
+}
+
+.handsontable th {
+  background-color: #f5f5f5 !important;
+}
+
+.handsontable td.htDimmed {
+  color: #999;
+}
+
+/* Row selection checkbox column */
+.handsontable .htCheckboxRendererInput {
+  cursor: pointer;
+}
+
+/* Price change indicators */
+.price-up {
+  color: #d9534f !important;
+  font-weight: bold;
+}
+
+.price-down {
+  color: #5cb85c !important;
+  font-weight: bold;
+}
+
+.price-same {
+  color: #666;
+}
+
+/* Low stock warning */
+.low-stock {
+  background-color: #fcf8e3 !important;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .btn-toolbar .btn-group {
+    margin-bottom: 5px;
+  }
+  
+  .stat-box {
+    margin-bottom: 10px;
+  }
+}
+
+/* Loading spinner */
+.loading {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #f3f3f3;
+  border-top: 2px solid #337ab7;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  vertical-align: middle;
+  margin-right: 5px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Button states */
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Alerts */
+.alert {
+  padding: 10px 15px;
+  margin-bottom: 10px;
+  border-radius: 3px;
+}
+
+/* Dropdown improvements */
+.dropdown-menu {
+  font-size: 13px;
+}
+
+.dropdown-menu > li > a {
+  padding: 8px 15px;
+}

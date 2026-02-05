@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "DropshipTracker - CS-Cart Product Sync",
+  "version": "1.0.0",
+  "description": "Scrape products from any supplier site, track prices/stock, and export to CS-Cart XML/CSV format with Google Drive sync",
+  "author": "Your Name",
+  
+  "permissions": [
+    "activeTab",
+    "storage",
+    "identity",
+    "alarms",
+    "downloads",
+    "webRequest"
+  ],
+  
+  "host_permissions": [
+    "*://*/*"
+  ],
+  
+  "oauth2": {
+    "client_id": "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.file"
+    ]
+  },
+  
+  "background": {
+    "service_worker": "background.js"
+  },
+  
+  "action": {
+    "default_title": "DropshipTracker"
+  },
+  
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["js/jquery-3.1.1.min.js", "js/sha256.min.js", "onload.js"],
+      "css": ["onload.css"],
+      "run_at": "document_end"
+    }
+  ],
+  
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.html", "css/*", "js/*"],
+      "matches": ["*://*/*"]
+    }
+  ]
+}

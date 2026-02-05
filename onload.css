@@ -1,0 +1,35 @@
+/* DropshipTracker Content Script Styles */
+
+.dropship-table-highlight {
+  outline: 3px solid #4CAF50 !important;
+  outline-offset: 2px !important;
+  background-color: rgba(76, 175, 80, 0.05) !important;
+}
+
+.dropship-hover-highlight {
+  outline: 2px dashed #2196F3 !important;
+  outline-offset: 1px !important;
+  cursor: pointer !important;
+}
+
+.dropship-next-button {
+  outline: 3px solid #FF9800 !important;
+  outline-offset: 2px !important;
+}
+
+.dropship-selecting-next {
+  cursor: crosshair !important;
+}
+
+.dropship-selecting-next * {
+  cursor: crosshair !important;
+}
+
+/* Row highlight on hover in selection mode */
+.dropship-table-highlight > * {
+  transition: background-color 0.2s ease;
+}
+
+.dropship-table-highlight > *:hover {
+  background-color: rgba(76, 175, 80, 0.1) !important;
+}
