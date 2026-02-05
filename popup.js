@@ -56,6 +56,7 @@
     loadSettings();
     loadCatalog();
     loadSuppliers();
+    loadScrapedData(); // Restore any previously scraped data
     initializeDataTable();
     initializeCatalogTable();
     bindEvents();
@@ -63,6 +64,74 @@
     
     console.log("[DropshipTracker] Popup initialized for tab", state.tabId);
   });
+
+  // ============================================
+  // DATA PERSISTENCE
+  // ============================================
+  
+  /**
+   * Save scraped data to chrome.storage.local
+   * Prevents data loss when popup closes
+   */
+  function saveScrapedData() {
+    chrome.storage.local.set({
+      scrapedSession: {
+        data: state.data,
+        rawData: state.rawData,
+        fieldNames: state.fieldNames,
+        fieldMapping: state.fieldMapping,
+        savedAt: Date.now(),
+        tabUrl: state.tabUrl
+      }
+    }, () => {
+      console.log('[DropshipTracker] Scraped data saved:', state.data.length, 'items');
+    });
+  }
+  
+  /**
+   * Load scraped data from chrome.storage.local
+   * Restores session if popup was closed
+   */
+  function loadScrapedData() {
+    chrome.storage.local.get(['scrapedSession'], (result) => {
+      if (result.scrapedSession && result.scrapedSession.data?.length > 0) {
+        const session = result.scrapedSession;
+        const hourAgo = Date.now() - (60 * 60 * 1000);
+        
+        // Only restore if less than 1 hour old
+        if (session.savedAt > hourAgo) {
+          state.data = session.data;
+          state.rawData = session.rawData || [];
+          state.fieldNames = session.fieldNames || [];
+          state.fieldMapping = session.fieldMapping || {};
+          
+          // Update UI after tables are initialized
+          setTimeout(() => {
+            if (state.dataTable) {
+              updateDataTable(state.data);
+              updateRowCount(state.data.length);
+              updateExportButtons();
+              if (state.data.length > 0) {
+                showFieldMapping();
+                setStatus(`Restored ${state.data.length} scraped items from previous session`);
+                showToast(`Restored ${state.data.length} items`, 'info');
+              }
+            }
+          }, 100);
+        } else {
+          // Clear old session
+          chrome.storage.local.remove('scrapedSession');
+        }
+      }
+    });
+  }
+  
+  /**
+   * Clear scraped session data
+   */
+  function clearScrapedSession() {
+    chrome.storage.local.remove('scrapedSession');
+  }
 
   // ============================================
   // DATA TABLE (Handsontable)
@@ -207,6 +276,7 @@
     $('#findTablesBtn').on('click', findTables);
     $('#nextTableBtn').on('click', nextTable);
     $('#extractProductBtn').on('click', extractProduct);
+    $('#updateCatalogBtn').on('click', updateCatalogFromPage);
     $('#locateNextBtn').on('click', locateNextButton);
     $('#crawlBtn').on('click', startCrawl);
     $('#stopCrawlBtn').on('click', stopCrawl);
@@ -336,30 +406,136 @@
           'Title': response.title || '',
           'Price': response.price || '',
           'Currency': response.currency || 'USD',
-          'Description': response.description || '',
+          'Description': response.descriptionText || '',
           'Images': (response.images || []).join('|||'),
           'URL': response.url || '',
           'Domain': response.domain || '',
           'Variants': JSON.stringify(response.variants || []),
+          'Reviews': (response.reviews || []).length + ' reviews',
           'Shipping': response.shipping || '',
           'Brand': response.brand || '',
           'SKU': response.sku || ''
         };
         
-        state.rawData = [response];
-        state.data = [row];
-        state.fieldNames = Object.keys(row);
+        // Check if product already exists in scraped data (by ID or URL)
+        const existingIndex = state.rawData.findIndex(r => 
+          (r.productId && r.productId === response.productId) || 
+          (r.url && r.url === response.url)
+        );
         
-        updateDataTable([row]);
-        setStatus('Product extracted successfully');
+        if (existingIndex >= 0) {
+          // UPDATE existing row - merge data
+          state.rawData[existingIndex] = { ...state.rawData[existingIndex], ...response };
+          state.data[existingIndex] = { ...state.data[existingIndex], ...row };
+          showToast(`Updated existing product: ${response.title?.substring(0, 40)}...`, 'success');
+        } else {
+          // APPEND new row (don't overwrite!)
+          state.rawData.push(response);
+          state.data.push(row);
+          showToast(`Added product: ${response.title?.substring(0, 40)}...`, 'success');
+        }
+        
+        // Ensure all field names are tracked
+        Object.keys(row).forEach(key => {
+          if (!state.fieldNames.includes(key)) {
+            state.fieldNames.push(key);
+          }
+        });
+        
+        updateDataTable(state.data);
+        setStatus(`${state.data.length} products in scraper`);
+        updateRowCount(state.data.length);
         
         $('#addToCatalogBtn').prop('disabled', false);
         updateExportButtons();
         showFieldMapping();
+        
+        // Auto-save scraped data
+        saveScrapedData();
       } else {
         setStatus('Could not extract product details');
         showToast('No product data found. Make sure you\'re on a product page.', 'warning');
       }
+    });
+  }
+  
+  /**
+   * Update an existing catalog item with data from current product page
+   * Use this when visiting a product page for a product already in catalog
+   */
+  function updateCatalogFromPage() {
+    setStatus('Extracting product to update catalog...');
+    
+    sendToContentScript({ action: 'extractProduct' }, (response) => {
+      if (!response || (!response.productId && !response.title)) {
+        setStatus('Could not extract product data');
+        showToast('No product data found. Make sure you\'re on a product page.', 'error');
+        return;
+      }
+      
+      // Try to find matching catalog item by product ID or URL
+      const matchedProduct = state.catalog.find(p => 
+        (response.productId && p.productCode === response.productId) ||
+        (response.url && p.url === response.url) ||
+        (response.productId && p.productCode?.includes(response.productId))
+      );
+      
+      if (!matchedProduct) {
+        // Show list of possible matches by title similarity
+        const possibleMatches = state.catalog.filter(p => {
+          if (!p.title || !response.title) return false;
+          const pWords = p.title.toLowerCase().split(/\s+/);
+          const rWords = response.title.toLowerCase().split(/\s+/);
+          const common = pWords.filter(w => rWords.includes(w) && w.length > 3);
+          return common.length >= 2;
+        });
+        
+        if (possibleMatches.length > 0) {
+          const matchList = possibleMatches.slice(0, 3).map(p => `• ${p.title?.substring(0, 50)}...`).join('\n');
+          showToast(`Product not found in catalog by ID/URL.\n\nPossible matches:\n${matchList}\n\nUse "Extract Product" to add as new.`, 'warning');
+        } else {
+          showToast('Product not found in catalog. Use "Extract Product" to add it as new.', 'warning');
+        }
+        setStatus('Product not in catalog');
+        return;
+      }
+      
+      // Build updates object with new data
+      const updates = {
+        // Update with fresh data
+        title: response.title || matchedProduct.title,
+        description: response.description || matchedProduct.description,
+        descriptionText: response.descriptionText || matchedProduct.descriptionText,
+        images: response.images?.length > 0 ? response.images : matchedProduct.images,
+        variants: response.variants?.length > 0 ? response.variants : matchedProduct.variants,
+        variantGroups: response.variantGroups || matchedProduct.variantGroups,
+        reviews: response.reviews?.length > 0 ? response.reviews : matchedProduct.reviews,
+        shipping: response.shipping || matchedProduct.shipping,
+        brand: response.brand || matchedProduct.brand,
+        sku: response.sku || matchedProduct.sku,
+        
+        // Update price if available
+        supplierPrice: response.price ? parsePrice(response.price) : matchedProduct.supplierPrice,
+        
+        // Tracking info
+        lastChecked: Date.now(),
+        lastEnriched: Date.now()
+      };
+      
+      chrome.runtime.sendMessage({
+        action: 'updateCatalogProduct',
+        productCode: matchedProduct.productCode,
+        updates
+      }, (result) => {
+        if (result?.success) {
+          showToast(`✓ Updated "${matchedProduct.title?.substring(0, 40)}..." with fresh data`, 'success');
+          setStatus(`Catalog item updated: ${response.images?.length || 0} images, ${response.variants?.length || 0} variants, ${response.reviews?.length || 0} reviews`);
+          loadCatalog(); // Refresh catalog
+        } else {
+          showToast('Failed to update catalog item: ' + (result?.error || 'Unknown error'), 'error');
+          setStatus('Update failed');
+        }
+      });
     });
   }
 
@@ -398,6 +574,9 @@
     
     state.data = displayData;
     updateDataTable(displayData);
+    
+    // Auto-save scraped data
+    saveScrapedData();
   }
 
   function getShortFieldName(fullPath) {
@@ -991,7 +1170,11 @@
     $('#clearScrapedBtn').prop('disabled', true);
     $('#fieldMappingSection').hide();
     
+    // Clear saved session
+    clearScrapedSession();
+    
     showToast('All scraped data cleared', 'success');
+    setStatus('Ready. Click "Find Tables" to detect data on page.');
   }
   
   /**
