@@ -202,9 +202,10 @@
           readOnly: true,
           width: 70,
           renderer: function(instance, td, row, col, prop, value, cellProperties) {
+            // Use data attributes instead of inline onclick (CSP compliant)
             td.innerHTML = '<div class="row-actions">' +
-              '<button class="btn btn-xs btn-default btn-preview" onclick="window.previewCatalogRow(' + row + ')" title="Preview">👁️</button>' +
-              '<button class="btn btn-xs btn-default btn-delete" onclick="window.deleteCatalogRow(' + row + ')" title="Delete">🗑️</button>' +
+              '<button class="btn btn-xs btn-default btn-preview" data-action="preview" data-row="' + row + '" title="Preview">👁️</button>' +
+              '<button class="btn btn-xs btn-default btn-delete" data-action="delete" data-row="' + row + '" title="Delete">🗑️</button>' +
               '</div>';
             return td;
           }
@@ -253,10 +254,6 @@
       }
     });
   }
-  
-  // Expose functions globally for inline onclick handlers
-  window.previewCatalogRow = function(row) { previewCatalogRow(row); };
-  window.deleteCatalogRow = function(row) { deleteCatalogRow(row); };
 
   // ============================================
   // EVENT BINDINGS
@@ -321,6 +318,28 @@
     $('#previewDeleteBtn').on('click', deletePreviewedItem);
     $('#previewModal').on('hidden.bs.modal', function() {
       state.previewContext = null;
+    });
+    
+    // Event delegation for catalog table action buttons (CSP compliant)
+    $('#catalogGrid').on('click', '[data-action]', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const action = $(this).data('action');
+      const row = parseInt($(this).data('row'), 10);
+      
+      if (action === 'preview') {
+        previewCatalogRow(row);
+      } else if (action === 'delete') {
+        deleteCatalogRow(row);
+      }
+    });
+    
+    // Event delegation for preview gallery images
+    $('#previewGallery').on('click', 'img', function() {
+      const src = $(this).attr('src');
+      $('#previewImage img').attr('src', src);
+      $('#previewGallery img').removeClass('active');
+      $(this).addClass('active');
     });
 
     // === SUPPLIERS TAB ===
@@ -962,11 +981,11 @@
       $('#previewImage').html('<div class="text-muted text-center"><span class="glyphicon glyphicon-picture" style="font-size:60px;color:#ccc;"></span><br>No image</div>');
     }
     
-    // Set gallery
+    // Set gallery (no inline onclick - using event delegation)
     const images = combined.images || [];
     if (images.length > 1) {
       $('#previewGallery').html(images.slice(0, 10).map((img, i) => 
-        `<img src="${img}" alt="Image ${i+1}" onclick="$('#previewImage img').attr('src','${img}')" class="${i===0?'active':''}">`
+        `<img src="${img}" alt="Image ${i+1}" class="${i===0?'active':''}">`
       ).join(''));
     } else {
       $('#previewGallery').empty();
@@ -1027,10 +1046,10 @@
       $('#previewImage').html('<div class="text-muted text-center"><span class="glyphicon glyphicon-picture" style="font-size:60px;color:#ccc;"></span><br>No image</div>');
     }
     
-    // Set gallery
+    // Set gallery (no inline onclick - using event delegation)
     if (images.length > 1) {
       $('#previewGallery').html(images.slice(0, 10).map((img, i) => 
-        `<img src="${img}" alt="Image ${i+1}" onclick="$('#previewImage img').attr('src','${img}')" class="${i===0?'active':''}">`
+        `<img src="${img}" alt="Image ${i+1}" class="${i===0?'active':''}">`
       ).join(''));
     } else {
       $('#previewGallery').empty();
