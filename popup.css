@@ -548,3 +548,38 @@ body {
   border-radius: 3px;
   border: 1px solid #ddd;
 }
+
+/* Row Actions Buttons */
+.row-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: center;
+  flex-wrap: nowrap;
+}
+
+.row-actions .btn {
+  padding: 1px 4px;
+  font-size: 11px;
+  min-width: 24px;
+}
+
+.row-actions .btn-scrape-details {
+  background-color: #17a2b8;
+  color: white;
+  border-color: #17a2b8;
+}
+
+.row-actions .btn-scrape-details:hover {
+  background-color: #138496;
+  border-color: #117a8b;
+}
+
+/* Handsontable Horizontal Scroll */
+.handsontable .wtHolder {
+  overflow-x: auto !important;
+}
+
+/* Make sure data table shows all columns */
+#dataPreview .wtHolder {
+  min-width: 100%;
+}

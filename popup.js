@@ -253,9 +253,11 @@
       colHeaders: true,
       rowHeaders: true,
       height: 300,
-      stretchH: 'all',
-      autoWrapRow: true,
-      autoWrapCol: true,
+      width: '100%',
+      stretchH: 'none',  // Allow horizontal scrolling for many columns
+      colWidths: 120,    // Default column width
+      autoWrapRow: false,
+      autoWrapCol: false,
       licenseKey: 'non-commercial-and-evaluation',
       contextMenu: {
         items: {
@@ -340,36 +342,45 @@
         { 
           data: 'actions',
           readOnly: true,
-          width: 70,
+          width: 110,
           renderer: function(instance, td, row, col, prop, value, cellProperties) {
-            // Use data attributes instead of inline onclick (CSP compliant)
+            // Action buttons - CSP compliant with data attributes
             td.innerHTML = '<div class="row-actions">' +
+              '<button class="btn btn-xs btn-info btn-scrape-details" data-action="scrape" data-row="' + row + '" title="Scrape Full Details">🔍</button>' +
               '<button class="btn btn-xs btn-default btn-preview" data-action="preview" data-row="' + row + '" title="Preview">👁️</button>' +
-              '<button class="btn btn-xs btn-default btn-delete" data-action="delete" data-row="' + row + '" title="Delete">🗑️</button>' +
+              '<button class="btn btn-xs btn-danger btn-delete" data-action="delete" data-row="' + row + '" title="Delete">🗑️</button>' +
               '</div>';
             return td;
           }
         }
       ],
       height: 350,
-      stretchH: 'all',
+      width: '100%',
+      stretchH: 'none',  // Allow horizontal scroll for all columns
       licenseKey: 'non-commercial-and-evaluation',
       manualColumnResize: true,
       columnSorting: true,
       filters: true,
       contextMenu: {
         items: {
+          'scrape_details': {
+            name: '🔍 Scrape Full Details',
+            callback: function(key, selection) {
+              const row = this.toPhysicalRow(selection[0].start.row);
+              scrapeProductDetails(row);
+            }
+          },
           'preview': {
             name: '👁️ Preview',
             callback: function(key, selection) {
-              const row = selection[0].start.row;
+              const row = this.toPhysicalRow(selection[0].start.row);
               previewCatalogRow(row);
             }
           },
           'delete_row': {
             name: '🗑️ Delete',
             callback: function(key, selection) {
-              const rows = selection.map(s => s.start.row).sort((a, b) => b - a);
+              const rows = selection.map(s => this.toPhysicalRow(s.start.row)).sort((a, b) => b - a);
               rows.forEach(row => deleteCatalogRow(row));
             }
           },
@@ -377,11 +388,30 @@
           'copy': { name: 'Copy' }
         }
       },
+      // Use Handsontable's native click handler for reliable button clicks
+      afterOnCellMouseDown: function(event, coords, td) {
+        const target = event.target;
+        if (target.matches('[data-action]') || target.closest('[data-action]')) {
+          event.stopPropagation();
+          const btn = target.matches('[data-action]') ? target : target.closest('[data-action]');
+          const action = btn.dataset.action;
+          const physicalRow = this.toPhysicalRow(coords.row);
+          
+          if (action === 'preview') {
+            previewCatalogRow(physicalRow);
+          } else if (action === 'delete') {
+            deleteCatalogRow(physicalRow);
+          } else if (action === 'scrape') {
+            scrapeProductDetails(physicalRow);
+          }
+        }
+      },
       afterChange: function(changes, source) {
         if (source === 'edit' && changes) {
           changes.forEach(([row, prop, oldVal, newVal]) => {
             if (prop === 'yourPrice' && oldVal !== newVal) {
-              const product = state.catalog[row];
+              const physicalRow = this.toPhysicalRow(row);
+              const product = state.catalog[physicalRow];
               if (product) {
                 updateCatalogProduct(product.productCode, { yourPrice: newVal });
               }
@@ -474,19 +504,8 @@
       state.previewContext = null;
     });
     
-    // Event delegation for catalog table action buttons (CSP compliant)
-    $('#catalogGrid').on('click', '[data-action]', function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      const action = $(this).data('action');
-      const row = parseInt($(this).data('row'), 10);
-      
-      if (action === 'preview') {
-        previewCatalogRow(row);
-      } else if (action === 'delete') {
-        deleteCatalogRow(row);
-      }
-    });
+    // Scrape Selected button
+    $('#scrapeSelectedBtn').on('click', scrapeSelectedProducts);
     
     // Event delegation for preview gallery images
     $('#previewGallery').on('click', 'img', function() {
@@ -784,6 +803,184 @@
     });
   }
 
+  /**
+   * Scrape full details for a single catalog product
+   * Opens product URL in new tab, extracts data, updates catalog
+   */
+  function scrapeProductDetails(rowIndex) {
+    if (rowIndex < 0 || rowIndex >= state.catalog.length) {
+      showToast('Invalid product row', 'error');
+      return;
+    }
+    
+    const product = state.catalog[rowIndex];
+    if (!product.url) {
+      showToast('Product has no URL to scrape', 'warning');
+      return;
+    }
+    
+    setStatus(`Opening product page for scraping: ${product.title?.substring(0, 40)}...`);
+    showToast('Opening product page to scrape details...', 'info');
+    
+    // Open the product URL in a new tab and scrape
+    chrome.tabs.create({ url: product.url, active: false }, (tab) => {
+      const tabId = tab.id;
+      
+      // Wait for page to load, then extract
+      const checkInterval = setInterval(() => {
+        chrome.tabs.get(tabId, (tabInfo) => {
+          if (chrome.runtime.lastError || !tabInfo) {
+            clearInterval(checkInterval);
+            return;
+          }
+          
+          if (tabInfo.status === 'complete') {
+            clearInterval(checkInterval);
+            
+            // Give the page a moment to fully render dynamic content
+            setTimeout(() => {
+              chrome.tabs.sendMessage(tabId, { action: 'extractProduct' }, (response) => {
+                if (chrome.runtime.lastError) {
+                  showToast('Could not extract from page - content script not loaded', 'error');
+                  chrome.tabs.remove(tabId);
+                  return;
+                }
+                
+                if (response && (response.productId || response.title)) {
+                  // Update catalog with enriched data
+                  const updates = {
+                    title: response.title || product.title,
+                    description: response.description || product.description,
+                    descriptionText: response.descriptionText || product.descriptionText,
+                    images: response.images?.length > 0 ? response.images : product.images,
+                    variants: response.variants?.length > 0 ? response.variants : product.variants,
+                    variantGroups: response.variantGroups || product.variantGroups,
+                    reviews: response.reviews?.length > 0 ? response.reviews : product.reviews,
+                    shipping: response.shipping || product.shipping,
+                    brand: response.brand || product.brand,
+                    sku: response.sku || product.sku,
+                    supplierPrice: response.price ? parsePrice(response.price) : product.supplierPrice,
+                    lastChecked: Date.now(),
+                    lastEnriched: Date.now()
+                  };
+                  
+                  chrome.runtime.sendMessage({
+                    action: 'updateCatalogProduct',
+                    productCode: product.productCode,
+                    updates: updates
+                  }, (resp) => {
+                    if (resp?.success) {
+                      // Update local state
+                      Object.assign(state.catalog[rowIndex], updates);
+                      refreshCatalogTable();
+                      showToast(`✓ Scraped details for: ${product.title?.substring(0, 30)}...`, 'success');
+                      setStatus('Product details updated');
+                    }
+                    // Close the tab
+                    chrome.tabs.remove(tabId);
+                  });
+                } else {
+                  showToast('Could not extract product data from page', 'warning');
+                  chrome.tabs.remove(tabId);
+                }
+              });
+            }, 2000); // Wait 2 seconds for dynamic content
+          }
+        });
+      }, 500); // Check tab status every 500ms
+      
+      // Timeout after 30 seconds
+      setTimeout(() => {
+        clearInterval(checkInterval);
+      }, 30000);
+    });
+  }
+
+  /**
+   * Scrape details for selected catalog products
+   * Rate-limited to avoid overwhelming the browser
+   */
+  function scrapeSelectedProducts() {
+    const selected = getSelectedCatalogRows();
+    
+    if (selected.length === 0) {
+      showToast('No products selected. Click rows to select them first.', 'warning');
+      return;
+    }
+    
+    if (selected.length > 10) {
+      if (!confirm(`You are about to scrape ${selected.length} products. This will open each product page in sequence with a 5-second delay between each.\n\nContinue?`)) {
+        return;
+      }
+    }
+    
+    showToast(`Scraping ${selected.length} products with 5-second delay...`, 'info');
+    setStatus(`Scraping 0/${selected.length} products...`);
+    
+    let currentIndex = 0;
+    
+    function scrapeNext() {
+      if (currentIndex >= selected.length) {
+        setStatus(`Completed scraping ${selected.length} products`);
+        showToast(`✓ Finished scraping ${selected.length} products`, 'success');
+        return;
+      }
+      
+      const rowIndex = selected[currentIndex];
+      setStatus(`Scraping ${currentIndex + 1}/${selected.length}: ${state.catalog[rowIndex]?.title?.substring(0, 30)}...`);
+      
+      scrapeProductDetails(rowIndex);
+      currentIndex++;
+      
+      // Wait 5 seconds before next scrape to be respectful
+      if (currentIndex < selected.length) {
+        setTimeout(scrapeNext, 5000);
+      } else {
+        setTimeout(() => {
+          setStatus(`Completed scraping ${selected.length} products`);
+          showToast(`✓ Finished scraping ${selected.length} products`, 'success');
+        }, 3000);
+      }
+    }
+    
+    scrapeNext();
+  }
+
+  /**
+   * Get selected rows from catalog table
+   */
+  function getSelectedCatalogRows() {
+    if (!state.catalogTable) return [];
+    
+    const selectedRanges = state.catalogTable.getSelected();
+    if (!selectedRanges) return [];
+    
+    const selectedRows = new Set();
+    selectedRanges.forEach(([startRow, startCol, endRow, endCol]) => {
+      for (let row = Math.min(startRow, endRow); row <= Math.max(startRow, endRow); row++) {
+        const physicalRow = state.catalogTable.toPhysicalRow(row);
+        if (physicalRow >= 0 && physicalRow < state.catalog.length) {
+          selectedRows.add(physicalRow);
+        }
+      }
+    });
+    
+    return Array.from(selectedRows).sort((a, b) => a - b);
+  }
+
+  /**
+   * Update catalog selection status
+   */
+  function updateCatalogSelection() {
+    const selected = getSelectedCatalogRows();
+    const $btn = $('#scrapeSelectedBtn');
+    if (selected.length > 0) {
+      $btn.text(`Scrape Selected (${selected.length})`).prop('disabled', false);
+    } else {
+      $btn.text('Scrape Selected').prop('disabled', true);
+    }
+  }
+
   function processScrapedData(rawData) {
     state.rawData = rawData;
     
@@ -884,13 +1081,34 @@
       return;
     }
     
-    const headers = Object.keys(data[0]);
-    const arrayData = data.map(row => headers.map(h => row[h]));
+    // Use state.fieldNames if available, otherwise collect ALL unique keys from ALL rows
+    let headers;
+    if (state.fieldNames && state.fieldNames.length > 0) {
+      headers = state.fieldNames;
+    } else {
+      const allKeys = new Set();
+      data.forEach(row => Object.keys(row).forEach(key => allKeys.add(key)));
+      headers = Array.from(allKeys);
+    }
+    
+    // Convert data to array format
+    const arrayData = data.map(row => headers.map(h => row[h] || ''));
+    
+    // Calculate dynamic column widths based on header length and content
+    const colWidths = headers.map(h => {
+      const headerLen = h.length * 8;
+      return Math.max(80, Math.min(250, headerLen + 30));
+    });
     
     state.dataTable.updateSettings({
       colHeaders: headers,
-      data: arrayData
+      data: arrayData,
+      colWidths: colWidths,
+      columns: headers.map(() => ({ readOnly: false }))
     });
+    
+    // Update status
+    console.log(`[DropshipTracker] Data table updated: ${data.length} rows, ${headers.length} columns`);
   }
 
   function locateNextButton() {
