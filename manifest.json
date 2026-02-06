@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DropshipTracker - CS-Cart Product Sync",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Scrape products from any supplier site, track prices/stock, and export to CS-Cart XML/CSV format with Google Drive sync",
   "author": "Your Name",
   

@@ -122,8 +122,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse(result);
       });
       return true;
+      
+    case 'deleteSupplier':
+      deleteSupplier(request.domain).then(result => {
+        sendResponse(result);
+      });
+      return true;
   }
 });
+
+// Delete supplier
+async function deleteSupplier(domain) {
+  try {
+    const data = await chrome.storage.local.get(['suppliers']);
+    const suppliers = (data.suppliers || []).filter(s => s.domain !== domain);
+    await chrome.storage.local.set({ suppliers });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
 
 // Save products to catalog
 async function saveToCatalog(products) {

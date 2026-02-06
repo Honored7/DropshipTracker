@@ -119,7 +119,7 @@ body {
   height: 300px;
   border: 1px solid #ddd;
   margin-bottom: 15px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 /* Field Mapping Section */
@@ -577,9 +577,18 @@ body {
 /* Handsontable Horizontal Scroll */
 .handsontable .wtHolder {
   overflow-x: auto !important;
+  overflow-y: auto !important;
 }
 
 /* Make sure data table shows all columns */
 #dataPreview .wtHolder {
   min-width: 100%;
+}
+
+#dataPreview .handsontable {
+  width: max-content !important;
+}
+
+#catalogGrid .handsontable {
+  width: max-content !important;
 }

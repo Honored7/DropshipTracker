@@ -299,7 +299,7 @@
       data: [],
       colHeaders: ['✓', 'Image', 'Product Code', 'Title', 'Supplier', 'Supplier Price', 'Your Price', 'Stock', 'Rating', 'Category', 'Last Checked', 'Actions'],
       columns: [
-        { type: 'checkbox', className: 'htCenter', width: 30 },
+        { data: 'selected', type: 'checkbox', className: 'htCenter', width: 30 },
         { 
           data: 'thumbnail',
           readOnly: true,
@@ -407,9 +407,12 @@
         }
       },
       afterChange: function(changes, source) {
-        if (source === 'edit' && changes) {
+        if (changes) {
+          let selectionChanged = false;
           changes.forEach(([row, prop, oldVal, newVal]) => {
-            if (prop === 'yourPrice' && oldVal !== newVal) {
+            if (prop === 'selected') {
+              selectionChanged = true;
+            } else if (prop === 'yourPrice' && oldVal !== newVal && source === 'edit') {
               const physicalRow = this.toPhysicalRow(row);
               const product = state.catalog[physicalRow];
               if (product) {
@@ -417,13 +420,10 @@
               }
             }
           });
+          if (selectionChanged) {
+            updateCatalogSelection();
+          }
         }
-      },
-      afterSelection: function(row, column, row2, column2) {
-        updateCatalogSelection();
-      },
-      afterDeselect: function() {
-        updateCatalogSelection();
       }
     });
   }
@@ -952,38 +952,22 @@
   }
 
   /**
-   * Get selected rows from catalog table
+   * Get selected row indices from catalog table using checkbox state
    */
   function getSelectedCatalogRows() {
     if (!state.catalogTable) return [];
     
-    const selectedRanges = state.catalogTable.getSelected();
-    if (!selectedRanges) return [];
+    const selectedRows = [];
+    const data = state.catalogTable.getData();
     
-    const selectedRows = new Set();
-    selectedRanges.forEach(([startRow, startCol, endRow, endCol]) => {
-      for (let row = Math.min(startRow, endRow); row <= Math.max(startRow, endRow); row++) {
-        const physicalRow = state.catalogTable.toPhysicalRow(row);
-        if (physicalRow >= 0 && physicalRow < state.catalog.length) {
-          selectedRows.add(physicalRow);
-        }
+    data.forEach((row, index) => {
+      // row[0] is the checkbox column (selected property)
+      if (row[0] === true) {
+        selectedRows.push(index);
       }
     });
     
-    return Array.from(selectedRows).sort((a, b) => a - b);
-  }
-
-  /**
-   * Update catalog selection status
-   */
-  function updateCatalogSelection() {
-    const selected = getSelectedCatalogRows();
-    const $btn = $('#scrapeSelectedBtn');
-    if (selected.length > 0) {
-      $btn.text(`Scrape Selected (${selected.length})`).prop('disabled', false);
-    } else {
-      $btn.text('Scrape Selected').prop('disabled', true);
-    }
+    return selectedRows;
   }
 
   function processScrapedData(rawData) {
@@ -1424,6 +1408,7 @@
 
   function refreshCatalogTable() {
     const displayData = state.catalog.map(p => ({
+      selected: p.selected || false,  // Initialize checkbox state
       ...p,
       lastCheckedFormatted: p.lastChecked 
         ? new Date(p.lastChecked).toLocaleDateString() 
@@ -1432,6 +1417,7 @@
     
     state.catalogTable.loadData(displayData);
     updateCatalogStats();
+    updateCatalogSelection();
   }
 
   function updateCatalogCount() {
@@ -1456,16 +1442,26 @@
 
   function updateCatalogSelection() {
     const selected = [];
+    const selectedRows = [];
     const data = state.catalogTable.getData();
     
     data.forEach((row, index) => {
       if (row[0] === true) {
         selected.push(state.catalog[index]?.productCode);
+        selectedRows.push(index);
       }
     });
     
     state.selectedProducts = selected.filter(Boolean);
     $('#deleteSelectedBtn').prop('disabled', selected.length === 0);
+    
+    // Update Scrape Selected button
+    const $scrapeBtn = $('#scrapeSelectedBtn');
+    if (selectedRows.length > 0) {
+      $scrapeBtn.text(`Scrape Selected (${selectedRows.length})`).prop('disabled', false);
+    } else {
+      $scrapeBtn.text('Scrape Selected').prop('disabled', true);
+    }
     
     // Update selection status display
     if (state.selectedProducts.length > 0) {
@@ -1690,6 +1686,35 @@
         <span class="detail-value">${product.addedAt ? new Date(product.addedAt).toLocaleString() : 'Unknown'}</span>
       </div>
     `;
+    
+    // Add rating and review stats
+    if (product.rating) {
+      detailsHtml += `<div class="detail-row">
+        <span class="detail-label">Rating:</span>
+        <span class="detail-value">⭐ ${product.rating}</span>
+      </div>`;
+    }
+    
+    if (product.review_count) {
+      detailsHtml += `<div class="detail-row">
+        <span class="detail-label">Reviews:</span>
+        <span class="detail-value">${product.review_count} reviews</span>
+      </div>`;
+    }
+    
+    if (product.sold_count) {
+      detailsHtml += `<div class="detail-row">
+        <span class="detail-label">Sold:</span>
+        <span class="detail-value">${product.sold_count} units</span>
+      </div>`;
+    }
+    
+    if (product.storeName) {
+      detailsHtml += `<div class="detail-row">
+        <span class="detail-label">Store:</span>
+        <span class="detail-value">${product.storeName}${product.storeRating ? ` (${product.storeRating})` : ''}</span>
+      </div>`;
+    }
     
     if (product.variants && product.variants.length > 0) {
       detailsHtml += `<div class="detail-row">
@@ -2270,9 +2295,135 @@
   function loadSuppliers() {
     chrome.runtime.sendMessage({ action: 'getSuppliers' }, (response) => {
       state.suppliers = response?.suppliers || [];
-      // Update supplier cards with product counts
+      renderSupplierCards();
       updateSupplierStats();
     });
+  }
+
+  function renderSupplierCards() {
+    const $list = $('#suppliersList');
+    $list.empty();
+    
+    if (state.suppliers.length === 0) {
+      $list.html('<p class="text-muted">No suppliers configured. Click "Add Supplier" to add one.</p>');
+      return;
+    }
+    
+    state.suppliers.forEach(supplier => {
+      const $card = $(`
+        <div class="supplier-card" data-domain="${supplier.domain}">
+          <div class="supplier-icon">
+            <img src="https://www.google.com/s2/favicons?domain=${supplier.domain}&sz=32" alt="" onerror="this.style.display='none'">
+          </div>
+          <div class="supplier-info">
+            <h5>${supplier.name || supplier.domain}</h5>
+            <span class="text-muted">${supplier.domain}</span>
+            ${supplier.notes ? `<small class="text-muted d-block">${supplier.notes}</small>` : ''}
+          </div>
+          <div class="supplier-stats">
+            <span class="badge">0 products</span>
+          </div>
+          <div class="supplier-actions">
+            <button type="button" class="btn btn-xs btn-default btn-configure" data-domain="${supplier.domain}" title="Configure">
+              <span class="glyphicon glyphicon-cog"></span>
+            </button>
+            <button type="button" class="btn btn-xs btn-danger btn-delete-supplier" data-domain="${supplier.domain}" title="Delete">
+              <span class="glyphicon glyphicon-trash"></span>
+            </button>
+          </div>
+        </div>
+      `);
+      $list.append($card);
+    });
+    
+    // Bind events for supplier actions
+    $('.btn-delete-supplier').off('click').on('click', function() {
+      const domain = $(this).data('domain');
+      deleteSupplier(domain);
+    });
+    
+    $('.btn-configure').off('click').on('click', function() {
+      const domain = $(this).data('domain');
+      configureSupplier(domain);
+    });
+  }
+
+  function deleteSupplier(domain) {
+    if (!confirm(`Delete supplier ${domain}?`)) return;
+    
+    chrome.runtime.sendMessage({ action: 'deleteSupplier', domain }, (response) => {
+      if (response?.success) {
+        showToast('Supplier deleted', 'success');
+        loadSuppliers();
+      } else {
+        showToast('Failed to delete supplier', 'error');
+      }
+    });
+  }
+
+  function configureSupplier(domain) {
+    const supplier = state.suppliers.find(s => s.domain === domain);
+    if (!supplier) return;
+    
+    // Show configuration modal
+    const modal = `
+      <div id="configureSupplierModal" class="modal fade" tabindex="-1">
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <div class="modal-header">
+              <button type="button" class="close" data-dismiss="modal">&times;</button>
+              <h4 class="modal-title">Configure ${supplier.name || domain}</h4>
+            </div>
+            <div class="modal-body">
+              <div class="form-group">
+                <label>Display Name</label>
+                <input type="text" class="form-control" id="configSupplierName" value="${supplier.name || ''}">
+              </div>
+              <div class="form-group">
+                <label>Notes</label>
+                <textarea class="form-control" id="configSupplierNotes" rows="3">${supplier.notes || ''}</textarea>
+              </div>
+              <div class="form-group">
+                <label>Default Category</label>
+                <input type="text" class="form-control" id="configSupplierCategory" value="${supplier.defaultCategory || ''}" placeholder="e.g., Electronics///Gadgets">
+              </div>
+              <div class="form-group">
+                <label>Default Margin (%)</label>
+                <input type="number" class="form-control" id="configSupplierMargin" value="${supplier.defaultMargin || 30}" min="0" max="500">
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+              <button type="button" class="btn btn-primary" id="saveSupplierConfigBtn">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // Remove existing modal if any
+    $('#configureSupplierModal').remove();
+    $('body').append(modal);
+    
+    $('#saveSupplierConfigBtn').on('click', function() {
+      const updates = {
+        domain: domain,
+        name: $('#configSupplierName').val().trim(),
+        notes: $('#configSupplierNotes').val().trim(),
+        defaultCategory: $('#configSupplierCategory').val().trim(),
+        defaultMargin: parseInt($('#configSupplierMargin').val()) || 30
+      };
+      
+      chrome.runtime.sendMessage({ action: 'saveSupplier', supplier: updates }, (response) => {
+        if (response?.success) {
+          showToast('Supplier updated', 'success');
+          $('#configureSupplierModal').modal('hide');
+          loadSuppliers();
+        }
+      });
+    });
+    
+    $('#configureSupplierModal').modal('show');
   }
 
   function updateSupplierStats() {
