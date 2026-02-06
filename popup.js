@@ -419,7 +419,10 @@
           });
         }
       },
-      afterSelection: function() {
+      afterSelection: function(row, column, row2, column2) {
+        updateCatalogSelection();
+      },
+      afterDeselect: function() {
         updateCatalogSelection();
       }
     });
@@ -814,8 +817,10 @@
     }
     
     const product = state.catalog[rowIndex];
-    if (!product.url) {
-      showToast('Product has no URL to scrape', 'warning');
+    const productUrl = product.supplierUrl || product.url;
+    
+    if (!productUrl) {
+      showToast('Product has no URL to scrape. Map a URL field when scraping.', 'warning');
       return;
     }
     
@@ -823,7 +828,7 @@
     showToast('Opening product page to scrape details...', 'info');
     
     // Open the product URL in a new tab and scrape
-    chrome.tabs.create({ url: product.url, active: false }, (tab) => {
+    chrome.tabs.create({ url: productUrl, active: false }, (tab) => {
       const tabId = tab.id;
       
       // Wait for page to load, then extract
@@ -982,6 +987,7 @@
   }
 
   function processScrapedData(rawData) {
+    console.log('[DropshipTracker] Processing scraped data:', rawData.length, 'rows');
     state.rawData = rawData;
     
     // Process fields - group by path, filter low-frequency
@@ -994,6 +1000,8 @@
       });
     });
     
+    console.log('[DropshipTracker] Field counts:', Object.keys(fieldCounts).length, 'unique fields');
+    
     // Lower threshold: Keep fields that appear in at least 10% of rows (was 20%)
     const threshold = Math.max(1, rawData.length * FIELD_THRESHOLD);
     const allGoodFields = Object.entries(fieldCounts)
@@ -1001,12 +1009,16 @@
       .sort((a, b) => b[1] - a[1])
       .map(([field]) => field);
     
+    console.log('[DropshipTracker] Good fields after threshold:', allGoodFields.length);
+    
     // Store all fields for "expand" functionality
     state.allFieldNames = allGoodFields;
     
     // Limit visible columns (but allow expand)
     const maxCols = state.showAllColumns ? MAX_COLUMNS_EXPANDED : MAX_VISIBLE_COLUMNS;
     state.fieldNames = allGoodFields.slice(0, maxCols);
+    
+    console.log('[DropshipTracker] Visible fields:', state.fieldNames.length);
     
     // Update expand toggle visibility
     updateExpandToggle();
@@ -1020,6 +1032,8 @@
       });
       return displayRow;
     });
+    
+    console.log('[DropshipTracker] Display data sample:', displayData[0]);
     
     state.data = displayData;
     updateDataTable(displayData);
@@ -1081,22 +1095,34 @@
       return;
     }
     
-    // Use state.fieldNames if available, otherwise collect ALL unique keys from ALL rows
-    let headers;
-    if (state.fieldNames && state.fieldNames.length > 0) {
-      headers = state.fieldNames;
-    } else {
-      const allKeys = new Set();
-      data.forEach(row => Object.keys(row).forEach(key => allKeys.add(key)));
-      headers = Array.from(allKeys);
+    // Collect ALL unique keys from the display data (which uses short names)
+    const allKeys = new Set();
+    data.forEach(row => {
+      if (row && typeof row === 'object') {
+        Object.keys(row).forEach(key => {
+          if (key && row[key] !== undefined && row[key] !== null && row[key] !== '') {
+            allKeys.add(key);
+          }
+        });
+      }
+    });
+    const headers = Array.from(allKeys);
+    
+    if (headers.length === 0) {
+      console.warn('[DropshipTracker] No valid headers found in data');
+      state.dataTable.loadData([]);
+      return;
     }
     
     // Convert data to array format
-    const arrayData = data.map(row => headers.map(h => row[h] || ''));
+    const arrayData = data.map(row => headers.map(h => {
+      const val = row[h];
+      return val !== undefined && val !== null ? String(val) : '';
+    }));
     
     // Calculate dynamic column widths based on header length and content
     const colWidths = headers.map(h => {
-      const headerLen = h.length * 8;
+      const headerLen = (h || '').length * 8;
       return Math.max(80, Math.min(250, headerLen + 30));
     });
     
@@ -1107,8 +1133,12 @@
       columns: headers.map(() => ({ readOnly: false }))
     });
     
+    // Force render to ensure table displays
+    state.dataTable.render();
+    
     // Update status
     console.log(`[DropshipTracker] Data table updated: ${data.length} rows, ${headers.length} columns`);
+    console.log('[DropshipTracker] Headers:', headers);
   }
 
   function locateNextButton() {
@@ -1613,8 +1643,11 @@
     // Set title
     $('#previewModalTitle').text(product.title || product.productCode);
     
-    // Set image
-    const images = product.images || [];
+    // Set image - handle both array and comma-separated string
+    let images = product.images || [];
+    if (typeof images === 'string') {
+      images = images.split(',').map(i => i.trim()).filter(i => i && i.startsWith('http'));
+    }
     if (images.length > 0) {
       $('#previewImage').html(`<img src="${images[0]}" alt="Product">`);
     } else {
@@ -1682,8 +1715,9 @@
     $('#previewDetails').html(detailsHtml);
     
     // Set source link
-    if (product.url) {
-      $('#previewSourceLink').attr('href', product.url).show();
+    const productUrl = product.supplierUrl || product.url;
+    if (productUrl) {
+      $('#previewSourceLink').attr('href', productUrl).show();
     } else {
       $('#previewSourceLink').hide();
     }
