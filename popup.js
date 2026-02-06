@@ -7,18 +7,30 @@
   "use strict";
 
   // ============================================
+  // CONSTANTS
+  // ============================================
+  
+  const MAX_VISIBLE_COLUMNS = 40;  // Show up to 40 columns by default
+  const FIELD_THRESHOLD = 0.10;    // Fields appearing in 10% of rows (was 20%)
+  const MAX_COLUMNS_EXPANDED = 100; // Maximum when expanded
+
+  // ============================================
   // STATE MANAGEMENT
   // ============================================
   
   const state = {
     tabId: null,
     tabUrl: null,
+    tabDomain: null,
     
     // Scraper state
     data: [],
     rawData: [],
     fieldNames: [],
+    allFieldNames: [], // All fields before truncation
     fieldMapping: {},
+    customSelectors: {},
+    showAllColumns: false,
     tableSelector: null,
     nextSelector: null,
     scraping: false,
@@ -52,17 +64,26 @@
     state.tabId = parseInt(params.get('tabid'));
     state.tabUrl = decodeURIComponent(params.get('url') || '');
     
+    // Extract domain for persistent mappings
+    try {
+      state.tabDomain = new URL(state.tabUrl).hostname;
+    } catch(e) {
+      state.tabDomain = 'unknown';
+    }
+    
     // Initialize
     loadSettings();
     loadCatalog();
     loadSuppliers();
     loadScrapedData(); // Restore any previously scraped data
+    loadPersistedFieldMapping(); // NEW: Load saved field mappings for this domain
+    loadCustomSelectors(); // NEW: Load saved custom selectors
     initializeDataTable();
     initializeCatalogTable();
     bindEvents();
     checkDriveAuth();
     
-    console.log("[DropshipTracker] Popup initialized for tab", state.tabId);
+    console.log("[DropshipTracker] Popup initialized for tab", state.tabId, "domain:", state.tabDomain);
   });
 
   // ============================================
@@ -134,6 +155,93 @@
   }
 
   // ============================================
+  // PERSISTENT FIELD MAPPING (per domain)
+  // ============================================
+  
+  /**
+   * Load persisted field mappings for current domain
+   */
+  function loadPersistedFieldMapping() {
+    const key = `fieldMapping_${state.tabDomain}`;
+    chrome.storage.local.get([key], (result) => {
+      if (result[key]) {
+        state.fieldMapping = result[key].mapping || {};
+        console.log('[DropshipTracker] Loaded field mapping for', state.tabDomain, Object.keys(state.fieldMapping).length, 'fields');
+      }
+    });
+  }
+  
+  /**
+   * Save field mappings for current domain
+   */
+  function savePersistedFieldMapping() {
+    const key = `fieldMapping_${state.tabDomain}`;
+    chrome.storage.local.set({
+      [key]: {
+        mapping: state.fieldMapping,
+        savedAt: Date.now(),
+        domain: state.tabDomain
+      }
+    }, () => {
+      console.log('[DropshipTracker] Saved field mapping for', state.tabDomain);
+    });
+  }
+  
+  /**
+   * Load custom selectors for current domain
+   */
+  function loadCustomSelectors() {
+    const key = `customSelectors_${state.tabDomain}`;
+    chrome.storage.local.get([key], (result) => {
+      if (result[key]) {
+        state.customSelectors = result[key] || {};
+        console.log('[DropshipTracker] Loaded custom selectors for', state.tabDomain);
+        updateCustomSelectorsList();
+      }
+    });
+  }
+  
+  /**
+   * Save custom selectors for current domain
+   */
+  function saveCustomSelectors() {
+    const key = `customSelectors_${state.tabDomain}`;
+    chrome.storage.local.set({
+      [key]: state.customSelectors
+    }, () => {
+      console.log('[DropshipTracker] Saved custom selectors for', state.tabDomain);
+    });
+  }
+  
+  /**
+   * Update custom selectors display
+   */
+  function updateCustomSelectorsList() {
+    const $list = $('#customSelectorsList');
+    if (!$list.length) return;
+    
+    $list.empty();
+    
+    const entries = Object.entries(state.customSelectors);
+    if (entries.length === 0) {
+      $list.html('<li class="text-muted">No custom selectors defined</li>');
+      return;
+    }
+    
+    entries.forEach(([field, data]) => {
+      const $item = $(`
+        <li class="custom-selector-item">
+          <strong>${field}</strong>
+          <code title="${data.selector}">${data.selector.substring(0, 40)}...</code>
+          <span class="sample-value" title="${data.sampleValue}">${(data.sampleValue || '').substring(0, 30)}...</span>
+          <button class="btn btn-xs btn-danger" data-field="${field}" data-action="remove-selector">×</button>
+        </li>
+      `);
+      $list.append($item);
+    });
+  }
+
+  // ============================================
   // DATA TABLE (Handsontable)
   // ============================================
   
@@ -187,16 +295,48 @@
     
     state.catalogTable = new Handsontable(container, {
       data: [],
-      colHeaders: ['✓', 'Product Code', 'Title', 'Supplier', 'Supplier Price', 'Your Price', 'Stock', 'Last Checked', 'Actions'],
+      colHeaders: ['✓', 'Image', 'Product Code', 'Title', 'Supplier', 'Supplier Price', 'Your Price', 'Stock', 'Rating', 'Category', 'Last Checked', 'Actions'],
       columns: [
         { type: 'checkbox', className: 'htCenter', width: 30 },
-        { data: 'productCode', readOnly: true, width: 100 },
-        { data: 'title', readOnly: true, width: 200 },
-        { data: 'domain', readOnly: true, width: 100 },
-        { data: 'supplierPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, readOnly: true, width: 90 },
-        { data: 'yourPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, width: 90 },
-        { data: 'stock', type: 'numeric', readOnly: true, width: 60 },
-        { data: 'lastCheckedFormatted', readOnly: true, width: 90 },
+        { 
+          data: 'thumbnail',
+          readOnly: true,
+          width: 50,
+          renderer: function(instance, td, row, col, prop, value, cellProperties) {
+            // Show thumbnail image
+            const images = instance.getSourceDataAtRow(row)?.images;
+            const firstImage = images ? (Array.isArray(images) ? images[0] : images.split(',')[0]) : '';
+            if (firstImage && firstImage.startsWith('http')) {
+              td.innerHTML = `<img src="${firstImage}" style="max-width:40px;max-height:40px;object-fit:cover;" onerror="this.style.display='none'" />`;
+            } else {
+              td.innerHTML = '<span style="color:#ccc">📷</span>';
+            }
+            return td;
+          }
+        },
+        { data: 'productCode', readOnly: true, width: 90 },
+        { data: 'title', readOnly: true, width: 180 },
+        { data: 'domain', readOnly: true, width: 80 },
+        { data: 'supplierPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, readOnly: true, width: 80 },
+        { data: 'yourPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, width: 80 },
+        { data: 'stock', type: 'numeric', readOnly: true, width: 50 },
+        { 
+          data: 'rating',
+          readOnly: true,
+          width: 60,
+          renderer: function(instance, td, row, col, prop, value, cellProperties) {
+            const rating = value || instance.getSourceDataAtRow(row)?.rating;
+            const reviewCount = instance.getSourceDataAtRow(row)?.review_count;
+            if (rating) {
+              td.innerHTML = `⭐${rating}${reviewCount ? ` (${reviewCount})` : ''}`;
+            } else {
+              td.innerHTML = '-';
+            }
+            return td;
+          }
+        },
+        { data: 'category', readOnly: true, width: 100 },
+        { data: 'lastCheckedFormatted', readOnly: true, width: 80 },
         { 
           data: 'actions',
           readOnly: true,
@@ -289,6 +429,20 @@
     
     // Field mapping
     $('#autoMapBtn').on('click', autoMapFields);
+    
+    // Expand columns toggle
+    $('#expandColumnsToggle').on('click', toggleExpandColumns);
+    
+    // Custom selector picker
+    $('#pickSelectorBtn').on('click', startPickSelector);
+    $('#customSelectorsList').on('click', '[data-action="remove-selector"]', function(e) {
+      e.preventDefault();
+      const field = $(this).data('field');
+      delete state.customSelectors[field];
+      saveCustomSelectors();
+      updateCustomSelectorsList();
+      showToast(`Removed custom selector for ${field}`, 'info');
+    });
 
     // === CATALOG TAB ===
     
@@ -362,6 +516,78 @@
   // ============================================
   // SCRAPER FUNCTIONS
   // ============================================
+  
+  /**
+   * Start the selector picker to let user click on page elements
+   */
+  function startPickSelector() {
+    // Show a modal to select which field to pick
+    const fieldOptions = CSCART_FIELDS
+      .filter(f => f.id && !f.required) // Don't include required fields or ignore
+      .map(f => `<option value="${f.id}">${f.label}</option>`)
+      .join('');
+    
+    const modal = `
+      <div id="pickSelectorModal" class="modal fade" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+          <div class="modal-content">
+            <div class="modal-header">
+              <button type="button" class="close" data-dismiss="modal">&times;</button>
+              <h4 class="modal-title">Pick Element Selector</h4>
+            </div>
+            <div class="modal-body">
+              <p>Select the field you want to define a custom selector for:</p>
+              <select id="pickerFieldSelect" class="form-control">
+                ${fieldOptions}
+              </select>
+              <p class="text-muted" style="margin-top:10px;font-size:12px;">
+                After clicking "Start Picking", click on any element on the page.
+                The selector will be saved and used for future scrapes on this site.
+              </p>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+              <button type="button" class="btn btn-primary" id="startPickingBtn">Start Picking</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // Remove any existing modal
+    $('#pickSelectorModal').remove();
+    $('body').append(modal);
+    
+    // Bind start picking button
+    $('#startPickingBtn').on('click', function() {
+      const field = $('#pickerFieldSelect').val();
+      if (!field) {
+        showToast('Please select a field', 'warning');
+        return;
+      }
+      
+      $('#pickSelectorModal').modal('hide');
+      showToast(`Click on the "${field}" element on the page. Press ESC to cancel.`, 'info');
+      
+      sendToContentScript({ action: 'startSelectorPicker', field: field }, (response) => {
+        if (response && response.success) {
+          // Selector picked successfully
+          state.customSelectors[response.field] = {
+            selector: response.selector,
+            sampleValue: response.sampleValue,
+            savedAt: Date.now()
+          };
+          saveCustomSelectors();
+          updateCustomSelectorsList();
+          showToast(`Selector saved for "${response.field}": ${response.sampleValue?.substring(0, 50)}...`, 'success');
+        } else if (response && response.cancelled) {
+          showToast('Selector picking cancelled', 'info');
+        }
+      });
+    });
+    
+    $('#pickSelectorModal').modal('show');
+  }
   
   function findTables() {
     setStatus('Scanning page for data tables...');
@@ -571,20 +797,27 @@
       });
     });
     
-    // Keep fields that appear in at least 20% of rows
-    const threshold = rawData.length * 0.2;
-    const goodFields = Object.entries(fieldCounts)
+    // Lower threshold: Keep fields that appear in at least 10% of rows (was 20%)
+    const threshold = Math.max(1, rawData.length * FIELD_THRESHOLD);
+    const allGoodFields = Object.entries(fieldCounts)
       .filter(([_, count]) => count >= threshold)
       .sort((a, b) => b[1] - a[1])
-      .map(([field]) => field)
-      .slice(0, 20); // Max 20 columns
+      .map(([field]) => field);
     
-    state.fieldNames = goodFields;
+    // Store all fields for "expand" functionality
+    state.allFieldNames = allGoodFields;
+    
+    // Limit visible columns (but allow expand)
+    const maxCols = state.showAllColumns ? MAX_COLUMNS_EXPANDED : MAX_VISIBLE_COLUMNS;
+    state.fieldNames = allGoodFields.slice(0, maxCols);
+    
+    // Update expand toggle visibility
+    updateExpandToggle();
     
     // Convert to array format for display
     const displayData = rawData.map(row => {
       const displayRow = {};
-      goodFields.forEach(field => {
+      state.fieldNames.forEach(field => {
         const shortName = getShortFieldName(field);
         displayRow[shortName] = row[field] || '';
       });
@@ -594,8 +827,35 @@
     state.data = displayData;
     updateDataTable(displayData);
     
+    // Show field mapping (with persisted values)
+    showFieldMapping();
+    
     // Auto-save scraped data
     saveScrapedData();
+  }
+  
+  /**
+   * Update expand/collapse toggle visibility
+   */
+  function updateExpandToggle() {
+    const $toggle = $('#expandColumnsToggle');
+    if (state.allFieldNames.length > MAX_VISIBLE_COLUMNS) {
+      $toggle.show();
+      $toggle.text(state.showAllColumns 
+        ? `Show Less (${MAX_VISIBLE_COLUMNS} columns)` 
+        : `Show All (${state.allFieldNames.length} columns)`
+      );
+    } else {
+      $toggle.hide();
+    }
+  }
+  
+  /**
+   * Toggle between showing all columns or limited columns
+   */
+  function toggleExpandColumns() {
+    state.showAllColumns = !state.showAllColumns;
+    processScrapedData(state.rawData);
   }
 
   function getShortFieldName(fullPath) {
@@ -724,26 +984,37 @@
   
   const CSCART_FIELDS = [
     { id: '', label: '-- Ignore --' },
-    { id: 'product_code', label: 'Product Code *', required: true },
+    { id: 'product_code', label: 'Product Code * (Your Code)', required: true },
+    { id: 'supplier_product_id', label: 'Supplier Product ID (AliExpress/Alibaba ID)' },
+    { id: 'supplier_sku', label: 'Supplier SKU' },
     { id: 'product_name', label: 'Product Name *', required: true },
     { id: 'price', label: 'Price *', required: true },
-    { id: 'list_price', label: 'List Price (MSRP)' },
+    { id: 'list_price', label: 'List Price (MSRP/Original)' },
     { id: 'quantity', label: 'Quantity/Stock' },
     { id: 'category', label: 'Category' },
-    { id: 'description', label: 'Description' },
+    { id: 'description', label: 'Full Description' },
     { id: 'short_description', label: 'Short Description' },
-    { id: 'images', label: 'Images' },
+    { id: 'images', label: 'Images (Primary)' },
+    { id: 'additional_images', label: 'Additional Images' },
     { id: 'weight', label: 'Weight' },
     { id: 'brand', label: 'Brand/Manufacturer' },
-    { id: 'sku', label: 'SKU' },
     { id: 'url', label: 'Supplier URL' },
     { id: 'shipping', label: 'Shipping Info' },
+    { id: 'shipping_cost', label: 'Shipping Cost' },
     { id: 'variants', label: 'Variants/Options' },
-    { id: 'reviews', label: 'Reviews' },
-    { id: 'rating', label: 'Rating' },
+    { id: 'color', label: 'Color Option' },
+    { id: 'size', label: 'Size Option' },
+    { id: 'reviews', label: 'Reviews Text' },
+    { id: 'rating', label: 'Rating (Stars)' },
     { id: 'review_count', label: 'Review Count' },
+    { id: 'sold_count', label: 'Units Sold' },
     { id: 'meta_keywords', label: 'Meta Keywords' },
-    { id: 'meta_description', label: 'Meta Description' }
+    { id: 'meta_description', label: 'Meta Description' },
+    { id: 'attributes', label: 'Product Attributes' },
+    { id: 'specifications', label: 'Specifications' },
+    { id: 'min_order', label: 'Minimum Order' },
+    { id: 'store_name', label: 'Store/Seller Name' },
+    { id: 'store_rating', label: 'Store Rating' }
   ];
 
   function showFieldMapping() {
@@ -753,8 +1024,13 @@
     
     state.fieldNames.forEach((field, index) => {
       const shortName = getShortFieldName(field);
-      const autoMapped = autoDetectMapping(shortName);
-      state.fieldMapping[field] = autoMapped;
+      
+      // Use persisted mapping if available, otherwise auto-detect
+      let mappedValue = state.fieldMapping[field];
+      if (!mappedValue) {
+        mappedValue = autoDetectMapping(shortName);
+        state.fieldMapping[field] = mappedValue;
+      }
       
       const $row = $(`
         <div class="mapping-row">
@@ -762,43 +1038,113 @@
           <span class="arrow">→</span>
           <select class="form-control input-sm" data-field="${field}">
             ${CSCART_FIELDS.map(f => 
-              `<option value="${f.id}" ${f.id === autoMapped ? 'selected' : ''}>${f.label}</option>`
+              `<option value="${f.id}" ${f.id === mappedValue ? 'selected' : ''}>${f.label}</option>`
             ).join('')}
           </select>
         </div>
       `);
       
+      // Save mapping on change (persistent!)
       $row.find('select').on('change', function() {
-        state.fieldMapping[$(this).data('field')] = $(this).val();
+        const newValue = $(this).val();
+        state.fieldMapping[$(this).data('field')] = newValue;
+        savePersistedFieldMapping(); // Auto-save on any change
       });
       
       $grid.append($row);
     });
     
     $('#fieldMappingSection').slideDown();
+    
+    // Save initial auto-detected mappings
+    savePersistedFieldMapping();
   }
 
   function autoDetectMapping(fieldName) {
     const lower = fieldName.toLowerCase();
     
-    if (lower.includes('price') && !lower.includes('list')) return 'price';
+    // Price fields
+    if ((lower.includes('price') || lower.includes('cost')) && !lower.includes('list') && !lower.includes('original') && !lower.includes('was')) return 'price';
     if (lower.includes('list') && lower.includes('price')) return 'list_price';
-    if (lower.includes('title') || lower.includes('name')) return 'product_name';
-    if (lower.includes('desc')) return 'description';
-    if (lower.includes('img') || lower.includes('src') || lower.includes('image')) return 'images';
-    if (lower.includes('stock') || lower.includes('qty') || lower.includes('quantity')) return 'quantity';
-    if (lower.includes('category') || lower.includes('cat')) return 'category';
-    if (lower.includes('weight')) return 'weight';
-    if (lower.includes('brand') || lower.includes('manufacturer')) return 'brand';
-    if (lower.includes('sku') || lower.includes('code') || lower.includes('id')) return 'product_code';
-    if (lower.includes('href') || lower.includes('url') || lower.includes('link')) return 'url';
-    if (lower.includes('ship')) return 'shipping';
-    if (lower.includes('variant') || lower.includes('option')) return 'variants';
-    if (lower.includes('review') && lower.includes('count')) return 'review_count';
-    if (lower.includes('review')) return 'reviews';
-    if (lower.includes('rating') || lower.includes('star')) return 'rating';
+    if (lower.includes('original') && lower.includes('price')) return 'list_price';
+    if (lower.includes('was') && lower.includes('price')) return 'list_price';
+    if (lower.includes('msrp')) return 'list_price';
     
-    return '';
+    // Product identity
+    if (lower.includes('title') || (lower.includes('name') && lower.includes('product'))) return 'product_name';
+    if (lower === 'name' || lower === 'title') return 'product_name';
+    
+    // IDs and codes
+    if (lower.includes('sku') && lower.includes('id')) return 'supplier_sku';
+    if (lower.includes('item') && lower.includes('id')) return 'supplier_product_id';
+    if (lower.includes('product') && lower.includes('id')) return 'supplier_product_id';
+    if (lower.includes('sku')) return 'supplier_sku';
+    if (lower.includes('code') || lower.includes('_id')) return 'product_code';
+    
+    // Images
+    if (lower.includes('img') || lower.includes('image') || lower.includes('@src')) {
+      if (lower.includes('additional') || lower.includes('gallery') || lower.includes('thumb')) {
+        return 'additional_images';
+      }
+      return 'images';
+    }
+    
+    // Description
+    if (lower.includes('desc')) {
+      if (lower.includes('short') || lower.includes('brief')) return 'short_description';
+      return 'description';
+    }
+    
+    // Stock and quantity
+    if (lower.includes('stock') || lower.includes('qty') || lower.includes('quantity') || lower.includes('inventory')) return 'quantity';
+    
+    // Category
+    if (lower.includes('category') || lower.includes('cat')) return 'category';
+    
+    // Weight
+    if (lower.includes('weight')) return 'weight';
+    
+    // Brand
+    if (lower.includes('brand') || lower.includes('manufacturer')) return 'brand';
+    
+    // URLs
+    if (lower.includes('href') || lower.includes('url') || lower.includes('link')) return 'url';
+    
+    // Shipping
+    if (lower.includes('ship') || lower.includes('delivery') || lower.includes('freight')) {
+      if (lower.includes('cost') || lower.includes('fee') || lower.includes('price')) return 'shipping_cost';
+      return 'shipping';
+    }
+    
+    // Variants/Options
+    if (lower.includes('variant') || lower.includes('option')) return 'variants';
+    if (lower.includes('color') || lower.includes('colour')) return 'color';
+    if (lower.includes('size')) return 'size';
+    
+    // Reviews
+    if (lower.includes('review')) {
+      if (lower.includes('count') || lower.includes('num')) return 'review_count';
+      return 'reviews';
+    }
+    if (lower.includes('rating') || lower.includes('star')) return 'rating';
+    if (lower.includes('sold') || lower.includes('order')) return 'sold_count';
+    
+    // Store/Seller
+    if (lower.includes('store') || lower.includes('seller') || lower.includes('shop')) {
+      if (lower.includes('rating') || lower.includes('score')) return 'store_rating';
+      return 'store_name';
+    }
+    
+    // Attributes
+    if (lower.includes('attr') || lower.includes('spec') || lower.includes('feature')) {
+      if (lower.includes('spec')) return 'specifications';
+      return 'attributes';
+    }
+    
+    // Minimum order
+    if (lower.includes('min') && (lower.includes('order') || lower.includes('qty'))) return 'min_order';
+    
+    return ''; // Ignore by default
   }
 
   function autoMapFields() {
@@ -809,6 +1155,9 @@
       $(this).val(mapped);
       state.fieldMapping[field] = mapped;
     });
+    
+    // Save the auto-mapped fields
+    savePersistedFieldMapping();
     
     showToast('Fields auto-mapped based on names', 'success');
   }
@@ -1250,35 +1599,64 @@
         return '';
       };
       
-      const productCode = getMappedValue('product_code') || 
-                          rawRow._productId || 
+      // Product Code: Use your code first, fallback to supplier ID
+      const yourProductCode = getMappedValue('product_code');
+      const supplierProductId = getMappedValue('supplier_product_id') || rawRow._supplierProductId || rawRow._productId || '';
+      const supplierSku = getMappedValue('supplier_sku') || rawRow._supplierSku || '';
+      
+      const productCode = yourProductCode || 
+                          supplierProductId || 
                           rawRow['Product ID'] ||
                           `SKU-${Date.now()}-${index}`;
       
       const priceStr = getMappedValue('price') || rawRow.Price || '';
       const price = parsePrice(priceStr);
       
+      // Collect all images (primary + additional)
+      const primaryImages = getMappedValue('images') || rawRow.Images || '';
+      const additionalImages = getMappedValue('additional_images') || '';
+      const allImages = [primaryImages, additionalImages]
+        .filter(i => i)
+        .join(',')
+        .split(/[,|||]+/)
+        .map(i => i.trim())
+        .filter(i => i && i.startsWith('http'));
+      
       return {
         productCode: productCode,
+        supplierProductId: supplierProductId, // AliExpress/Alibaba item ID
+        supplierSku: supplierSku, // Supplier's SKU
         title: getMappedValue('product_name') || rawRow.Title || 'Untitled Product',
         supplierPrice: price,
         yourPrice: calculateSellingPrice(price),
+        listPrice: parsePrice(getMappedValue('list_price') || rawRow['List Price'] || ''),
         stock: parseInt(getMappedValue('quantity')) || 999,
         category: getMappedValue('category') || state.settings?.defaultCategory || '',
         description: getMappedValue('description') || rawRow.Description || '',
-        images: getMappedValue('images') || rawRow.Images || '',
+        shortDescription: getMappedValue('short_description') || '',
+        images: allImages.length > 0 ? allImages.join(',') : '',
         supplierUrl: getMappedValue('url') || rawRow.URL || state.tabUrl,
-        domain: new URL(state.tabUrl || 'http://unknown').hostname,
+        domain: state.tabDomain || new URL(state.tabUrl || 'http://unknown').hostname,
         variants: getMappedValue('variants') || rawRow.Variants || '',
+        color: getMappedValue('color') || '',
+        size: getMappedValue('size') || '',
         shipping: getMappedValue('shipping') || rawRow.Shipping || '',
+        shippingCost: parsePrice(getMappedValue('shipping_cost') || ''),
         brand: getMappedValue('brand') || rawRow.Brand || '',
         // Reviews data
         rating: getMappedValue('rating') || rawRow.Rating || '',
-        review_count: getMappedValue('review_count') || rawRow.Reviews || rawRow['Review Count'] || '',
+        review_count: getMappedValue('review_count') || getMappedValue('sold_count') || rawRow.Reviews || rawRow['Review Count'] || '',
         reviews: getMappedValue('reviews') || rawRow['Review Text'] || '',
+        // Store info
+        storeName: getMappedValue('store_name') || '',
+        storeRating: getMappedValue('store_rating') || '',
         // Meta data
         meta_keywords: getMappedValue('meta_keywords') || '',
-        meta_description: getMappedValue('meta_description') || ''
+        meta_description: getMappedValue('meta_description') || '',
+        // Attributes
+        attributes: getMappedValue('attributes') || '',
+        specifications: getMappedValue('specifications') || '',
+        minOrder: getMappedValue('min_order') || ''
       };
     });
     

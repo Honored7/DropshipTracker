@@ -149,11 +149,25 @@
             <h4>
               <span class="glyphicon glyphicon-transfer"></span> 
               Map Fields to CS-Cart
-              <button type="button" class="btn btn-xs btn-default pull-right" id="autoMapBtn">
-                <span class="glyphicon glyphicon-flash"></span> Auto-Map
-              </button>
+              <div class="btn-group pull-right">
+                <button type="button" class="btn btn-xs btn-default" id="autoMapBtn">
+                  <span class="glyphicon glyphicon-flash"></span> Auto-Map
+                </button>
+                <button type="button" class="btn btn-xs btn-info" id="pickSelectorBtn" title="Click to select elements on the page">
+                  <span class="glyphicon glyphicon-screenshot"></span> Pick Selector
+                </button>
+                <button type="button" class="btn btn-xs btn-link" id="expandColumnsToggle" style="display:none;">
+                  Show All Columns
+                </button>
+              </div>
             </h4>
             <div id="fieldMappingGrid"></div>
+            
+            <!-- Custom Selectors List -->
+            <div id="customSelectorsSection" style="margin-top:10px;">
+              <small class="text-muted">Custom selectors for this domain:</small>
+              <ul id="customSelectorsList" class="list-unstyled" style="font-size:11px;margin-top:5px;"></ul>
+            </div>
           </div>
         </div>
 

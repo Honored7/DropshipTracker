@@ -1,7 +1,7 @@
 /**
  * DropshipTracker Content Script
  * Based on InstantDataScrapper's proven table detection algorithm
- * Enhanced with site-specific extractors for AliExpress/Alibaba
+ * Enhanced with manual selector picker and comprehensive data extraction
  */
 
 (function() {
@@ -11,6 +11,14 @@
   let detectedTables = [];
   let currentTableIndex = 0;
   let nextButtonSelector = null;
+  
+  // Custom selectors defined by user (loaded from storage)
+  let customSelectors = {};
+  
+  // Selector picker state
+  let selectorPickerActive = false;
+  let selectorPickerCallback = null;
+  let selectorPickerField = null;
   
   // Site-specific configurations
   const SITE_CONFIGS = {
@@ -297,6 +305,7 @@
   
   /**
    * Extract data from current table
+   * Uses comprehensive mode to capture ALL data - filtering happens in popup
    */
   function getTableData(callback, customSelector) {
     const table = customSelector 
@@ -323,11 +332,12 @@
       });
     }
     
-    // Extract data from each row
+    // Extract data from each row - COMPREHENSIVE MODE
     rowElements.forEach((row, index) => {
-      const rowData = extractElementData(row, '');
+      const rowData = extractElementData(row, '', { comprehensive: true });
       rowData._rowIndex = index;
-      rowData._productId = extractProductIdFromElement(row);
+      rowData._supplierProductId = extractProductIdFromElement(row);
+      rowData._supplierSku = extractSupplierSku(row);
       rows.push(rowData);
     });
     
@@ -342,8 +352,9 @@
   
   /**
    * Recursively extract all data from element
+   * COMPREHENSIVE MODE: Capture everything, filter later in popup
    */
-  function extractElementData(element, path) {
+  function extractElementData(element, path, options = {}) {
     const data = {};
     const tag = element.tagName.toLowerCase();
     const classes = (element.className || '').toString().trim().split(/\s+/).filter(c => c).slice(0, 2);
@@ -361,21 +372,37 @@
       data[currentPath] = directText;
     }
     
-    // Get attributes - but filter out tracking URLs
-    if (element.href && isValidProductUrl(element.href)) {
-      data[currentPath + ' @href'] = cleanProductUrl(element.href);
+    // Get ALL attributes in comprehensive mode (for table scraping)
+    // Only filter in restrictive mode (for single product pages)
+    const comprehensiveMode = options.comprehensive !== false;
+    
+    if (element.href) {
+      if (comprehensiveMode || isValidProductUrl(element.href)) {
+        data[currentPath + ' @href'] = comprehensiveMode ? element.href : cleanProductUrl(element.href);
+      }
     }
-    if (element.src && isValidImageUrl(element.src)) {
-      data[currentPath + ' @src'] = element.src;
+    
+    // Capture ALL images in comprehensive mode
+    if (element.src) {
+      if (comprehensiveMode || isValidImageUrl(element.src)) {
+        data[currentPath + ' @src'] = element.src;
+      }
     }
+    
+    // Get data-src (lazy loaded images)
+    const dataSrc = element.getAttribute('data-src') || element.getAttribute('data-lazy-src');
+    if (dataSrc && dataSrc.startsWith('http')) {
+      data[currentPath + ' @data-src'] = dataSrc;
+    }
+    
     if (element.alt) data[currentPath + ' @alt'] = element.alt;
     if (element.title && element.title.length < 200) data[currentPath + ' @title'] = element.title;
     
-    // Get data attributes (but skip tracking/analytics data)
+    // Get data attributes
     for (const attr of element.attributes) {
       if (attr.name.startsWith('data-') && attr.value && attr.value.length < 500) {
-        // Skip tracking/analytics data attributes
-        const skipAttrs = ['data-spm', 'data-aplus', 'data-trace', 'data-log', 'data-track', 'data-beacon'];
+        // Skip only the most egregious tracking attributes
+        const skipAttrs = ['data-spm', 'data-aplus', 'data-beacon'];
         if (!skipAttrs.some(s => attr.name.startsWith(s))) {
           data[currentPath + ' @' + attr.name] = attr.value;
         }
@@ -393,7 +420,7 @@
     // Recurse into children
     for (const child of element.children) {
       if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(child.tagName)) continue;
-      Object.assign(data, extractElementData(child, currentPath));
+      Object.assign(data, extractElementData(child, currentPath, options));
     }
     
     return data;
@@ -500,6 +527,26 @@
         const match = href.match(pattern);
         if (match) return match[1];
       }
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Extract supplier SKU from element (separate from product ID)
+   */
+  function extractSupplierSku(element) {
+    // Check SKU-specific data attributes
+    const sku = element.getAttribute('data-sku') || 
+                element.getAttribute('data-product-sku') ||
+                element.getAttribute('data-sku-id');
+    if (sku) return sku;
+    
+    // Look for SKU text
+    const skuEl = element.querySelector('[class*="sku"], [class*="itemId"], [class*="product-id"]');
+    if (skuEl) {
+      const text = skuEl.textContent?.trim();
+      if (text && text.length < 50) return text;
     }
     
     return null;
@@ -975,6 +1022,284 @@
     }
   }
   
+  // ============================================
+  // SELECTOR PICKER - Let users click to select elements
+  // ============================================
+  
+  /**
+   * Start selector picker mode
+   */
+  function startSelectorPicker(callback, fieldName) {
+    selectorPickerActive = true;
+    selectorPickerCallback = callback;
+    selectorPickerField = fieldName;
+    
+    // Add picker styles
+    if (!document.getElementById('dropship-picker-styles')) {
+      const style = document.createElement('style');
+      style.id = 'dropship-picker-styles';
+      style.textContent = `
+        .dropship-picker-hover {
+          outline: 3px solid #00ff00 !important;
+          outline-offset: 2px;
+          cursor: crosshair !important;
+        }
+        .dropship-picker-selected {
+          outline: 3px solid #0066ff !important;
+          outline-offset: 2px;
+        }
+        .dropship-picker-overlay {
+          position: fixed;
+          top: 10px;
+          left: 50%;
+          transform: translateX(-50%);
+          background: #333;
+          color: #fff;
+          padding: 10px 20px;
+          border-radius: 5px;
+          z-index: 999999;
+          font-family: sans-serif;
+          font-size: 14px;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    
+    // Add overlay instructions
+    const overlay = document.createElement('div');
+    overlay.id = 'dropship-picker-overlay';
+    overlay.className = 'dropship-picker-overlay';
+    overlay.innerHTML = `Click on the element to select for <strong>${fieldName}</strong>. Press ESC to cancel.`;
+    document.body.appendChild(overlay);
+    
+    // Add event listeners
+    document.addEventListener('mouseover', pickerHoverHandler, true);
+    document.addEventListener('mouseout', pickerUnhoverHandler, true);
+    document.addEventListener('click', pickerClickHandler, true);
+    document.addEventListener('keydown', pickerEscHandler, true);
+    
+    callback({ started: true, field: fieldName });
+  }
+  
+  function pickerHoverHandler(e) {
+    if (!selectorPickerActive) return;
+    e.target.classList.add('dropship-picker-hover');
+  }
+  
+  function pickerUnhoverHandler(e) {
+    if (!selectorPickerActive) return;
+    e.target.classList.remove('dropship-picker-hover');
+  }
+  
+  function pickerClickHandler(e) {
+    if (!selectorPickerActive) return;
+    
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const element = e.target;
+    const selector = buildUniqueSelector(element);
+    const sampleValue = extractSampleValue(element);
+    
+    // Mark as selected
+    element.classList.remove('dropship-picker-hover');
+    element.classList.add('dropship-picker-selected');
+    
+    // Store the selector
+    customSelectors[selectorPickerField] = {
+      selector: selector,
+      sampleValue: sampleValue,
+      savedAt: Date.now()
+    };
+    
+    // Clean up
+    stopSelectorPicker();
+    
+    // Callback with result
+    if (selectorPickerCallback) {
+      selectorPickerCallback({
+        success: true,
+        field: selectorPickerField,
+        selector: selector,
+        sampleValue: sampleValue
+      });
+    }
+  }
+  
+  function pickerEscHandler(e) {
+    if (e.key === 'Escape' && selectorPickerActive) {
+      stopSelectorPicker();
+      if (selectorPickerCallback) {
+        selectorPickerCallback({ cancelled: true });
+      }
+    }
+  }
+  
+  function stopSelectorPicker() {
+    selectorPickerActive = false;
+    
+    // Remove listeners
+    document.removeEventListener('mouseover', pickerHoverHandler, true);
+    document.removeEventListener('mouseout', pickerUnhoverHandler, true);
+    document.removeEventListener('click', pickerClickHandler, true);
+    document.removeEventListener('keydown', pickerEscHandler, true);
+    
+    // Remove overlay
+    const overlay = document.getElementById('dropship-picker-overlay');
+    if (overlay) overlay.remove();
+    
+    // Remove hover highlights
+    document.querySelectorAll('.dropship-picker-hover').forEach(el => {
+      el.classList.remove('dropship-picker-hover');
+    });
+  }
+  
+  /**
+   * Build a unique CSS selector for an element
+   */
+  function buildUniqueSelector(element) {
+    const parts = [];
+    let current = element;
+    
+    while (current && current !== document.body && current !== document.documentElement) {
+      let selector = current.tagName.toLowerCase();
+      
+      // Use ID if unique
+      if (current.id && document.querySelectorAll('#' + CSS.escape(current.id)).length === 1) {
+        selector = '#' + CSS.escape(current.id);
+        parts.unshift(selector);
+        break;
+      }
+      
+      // Use data attributes if available (often stable)
+      const stableAttrs = ['data-product-id', 'data-item-id', 'data-sku', 'data-testid', 'role'];
+      for (const attr of stableAttrs) {
+        const val = current.getAttribute(attr);
+        if (val && !val.includes(' ')) {
+          selector += `[${attr}="${CSS.escape(val)}"]`;
+          parts.unshift(selector);
+          // Check if unique
+          if (document.querySelectorAll(parts.join(' > ')).length === 1) {
+            return parts.join(' > ');
+          }
+          break;
+        }
+      }
+      
+      // Use classes (filter dynamic ones)
+      if (current.className && typeof current.className === 'string') {
+        const classes = current.className.trim().split(/\s+/)
+          .filter(c => c && !/^\d|--|__|index-\d/.test(c))
+          .slice(0, 3);
+        if (classes.length > 0) {
+          selector += '.' + classes.map(c => CSS.escape(c)).join('.');
+        }
+      }
+      
+      // Add nth-child if needed for uniqueness
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+        if (siblings.length > 1) {
+          const index = siblings.indexOf(current) + 1;
+          selector += `:nth-child(${index})`;
+        }
+      }
+      
+      parts.unshift(selector);
+      current = current.parentElement;
+    }
+    
+    return parts.join(' > ');
+  }
+  
+  /**
+   * Extract sample value from element
+   */
+  function extractSampleValue(element) {
+    // Try to get the most meaningful value
+    if (element.tagName === 'IMG') {
+      return element.src || element.getAttribute('data-src') || '';
+    }
+    if (element.tagName === 'A') {
+      return element.href || element.textContent?.trim() || '';
+    }
+    if (element.tagName === 'INPUT' || element.tagName === 'SELECT') {
+      return element.value || '';
+    }
+    
+    // For other elements, get text content
+    return element.textContent?.trim().substring(0, 200) || '';
+  }
+  
+  /**
+   * Get custom selectors for a field
+   */
+  function getCustomSelector(field) {
+    return customSelectors[field] || null;
+  }
+  
+  /**
+   * Extract data using custom selector
+   */
+  function extractWithCustomSelector(selector) {
+    const element = document.querySelector(selector);
+    if (!element) return null;
+    
+    return extractSampleValue(element);
+  }
+  
+  /**
+   * Extract data from ALL matching elements (for multiple images, reviews, etc.)
+   */
+  function extractAllWithSelector(selector) {
+    const elements = document.querySelectorAll(selector);
+    if (elements.length === 0) return [];
+    
+    return Array.from(elements).map(el => extractSampleValue(el)).filter(v => v);
+  }
+  
+  /**
+   * Load custom selectors from storage
+   */
+  function loadCustomSelectors(callback) {
+    const domain = window.location.hostname;
+    const key = `customSelectors_${domain}`;
+    
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get([key], (result) => {
+        customSelectors = result[key] || {};
+        callback && callback(customSelectors);
+      });
+    } else {
+      callback && callback({});
+    }
+  }
+  
+  /**
+   * Save custom selectors to storage
+   */
+  function saveCustomSelectors(callback) {
+    const domain = window.location.hostname;
+    const key = `customSelectors_${domain}`;
+    
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ [key]: customSelectors }, () => {
+        callback && callback({ success: true });
+      });
+    }
+  }
+  
+  /**
+   * Get all custom selectors
+   */
+  function getAllCustomSelectors(callback) {
+    callback(customSelectors);
+  }
+  
+  // Load custom selectors on init
+  loadCustomSelectors();
+  
   // Message listener
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {
@@ -1008,6 +1333,32 @@
         
       case 'getPageHash':
         getPageHash(sendResponse);
+        return true;
+        
+      // New selector picker actions
+      case 'startSelectorPicker':
+        startSelectorPicker(sendResponse, request.field);
+        return true;
+        
+      case 'stopSelectorPicker':
+        stopSelectorPicker();
+        sendResponse({ stopped: true });
+        return true;
+        
+      case 'getCustomSelectors':
+        getAllCustomSelectors(sendResponse);
+        return true;
+        
+      case 'saveCustomSelectors':
+        customSelectors = request.selectors || {};
+        saveCustomSelectors(sendResponse);
+        return true;
+        
+      case 'extractWithSelector':
+        sendResponse({
+          value: extractWithCustomSelector(request.selector),
+          allValues: extractAllWithSelector(request.selector)
+        });
         return true;
         
       case 'ping':
