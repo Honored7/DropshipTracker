@@ -339,8 +339,8 @@
               
               console.log('[DropshipTracker] Data length after:', state.data.length);
               
-              // Reload table with a copy of the data
-              hot.loadData(state.data.length > 0 ? [...state.data] : []);
+              // Rebuild table properly (converts objects → arrays with correct headers)
+              updateDataTable(state.data);
               updateExportButtons();
               $('#rowCount').text(state.data.length);
               saveScrapedData();
@@ -2007,10 +2007,8 @@
     state.data.splice(rowIndex, 1);
     state.rawData.splice(rowIndex, 1);
     
-    // Safely reload table
-    if (state.dataTable) {
-      state.dataTable.loadData(state.data.length > 0 ? state.data : []);
-    }
+    // Rebuild table properly (converts objects → arrays with correct headers)
+    updateDataTable(state.data);
     updateExportButtons();
     $('#rowCount').text(state.data.length);
     saveScrapedData();
