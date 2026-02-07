@@ -1187,6 +1187,14 @@
     
     console.log('[DropshipTracker] Good fields after threshold + dedup:', allGoodFields.length);
     
+    // === NOISE COLUMN FILTERING (ported from IDS) ===
+    // Remove columns where all values are identical (repeated boilerplate)
+    const beforeNoise = allGoodFields.length;
+    allGoodFields = filterNoiseColumns(allGoodFields, rawData);
+    if (beforeNoise !== allGoodFields.length) {
+      console.log(`[DropshipTracker] Noise filter: ${beforeNoise} → ${allGoodFields.length} fields`);
+    }
+    
     // Store all fields for "expand" functionality
     state.allFieldNames = allGoodFields;
     
@@ -1199,12 +1207,16 @@
     // Update expand toggle visibility
     updateExpandToggle();
     
-    // Convert to array format for display
+    // === SMART COLUMN NAMING (ported from IDS) ===
+    // Build a global name map using the IDS algorithm (most specific CSS class per path)
+    const smartNames = buildSmartColumnNames(state.fieldNames);
+    
+    // Convert to array format for display using smart names
     const displayData = rawData.map(row => {
       const displayRow = {};
       state.fieldNames.forEach(field => {
-        const shortName = getShortFieldName(field);
-        displayRow[shortName] = row[field] || '';
+        const friendlyName = smartNames[field] || getShortFieldName(field);
+        displayRow[friendlyName] = row[field] || '';
       });
       return displayRow;
     });
@@ -1250,19 +1262,132 @@
     const parts = fullPath.split('/').filter(p => p);
     const last = parts[parts.length - 1] || fullPath;
     
-    // Check for attribute
-    if (fullPath.includes('@')) {
-      const attr = fullPath.split('@')[1];
-      return attr.replace('-', '_');
+    // Check for attribute suffix (href, src)
+    let suffix = '';
+    if (fullPath.includes(' ')) {
+      suffix = fullPath.split(' ').slice(1).join(' ').replace('@', '');
     }
     
     // Use class names if available
     const classMatch = last.match(/\.([a-zA-Z_-]+)/);
     if (classMatch) {
-      return classMatch[1].replace(/-/g, '_');
+      const name = classMatch[1].replace(/-/g, '_');
+      return suffix ? name + ' ' + suffix : name;
     }
     
-    return last.split('.')[0] || 'field';
+    const tagName = last.split('.')[0] || 'field';
+    return suffix ? tagName + ' ' + suffix : tagName;
+  }
+
+  /**
+   * IDS-ported smart column naming algorithm
+   * Walks DOM path segments in reverse, picks the most specific CSS class
+   * (the one used least often across all field paths = most unique)
+   *
+   * @param {string[]} allFieldPaths - All field paths across all rows
+   * @returns {Object} Map of fullPath → friendlyName
+   */
+  function buildSmartColumnNames(allFieldPaths) {
+    // 1. Build class frequency across ALL paths — classes appearing in fewer paths are more specific
+    const classPathCount = {};  // className → count of paths containing it
+    allFieldPaths.forEach(path => {
+      const seen = new Set();
+      const segments = path.split(' ')[0].split('/').filter(p => p);
+      segments.forEach(seg => {
+        const classes = seg.split('.').slice(1);
+        classes.forEach(cls => {
+          if (!seen.has(cls)) {
+            seen.add(cls);
+            classPathCount[cls] = (classPathCount[cls] || 0) + 1;
+          }
+        });
+      });
+    });
+    
+    // 2. For each path, find the most specific (least-frequent) class name
+    const nameMap = {};   // fullPath → friendlyName
+    const nameUsage = {}; // friendlyName → count (for collision handling)
+    
+    allFieldPaths.forEach(path => {
+      // Extract suffix (href, src, etc.)
+      let suffix = '';
+      const spaceParts = path.split(' ');
+      if (spaceParts.length > 1) {
+        suffix = spaceParts.slice(1).join(' ').replace(/@/g, '');
+      }
+      
+      // Walk segments in REVERSE (deepest = most specific)
+      const segments = spaceParts[0].split('/').filter(p => p);
+      let bestClass = '';
+      let bestScore = Infinity;
+      
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const classes = segments[i].split('.').slice(1);
+        for (const cls of classes) {
+          if (!cls) continue;
+          // Skip generic container/wrapper classes
+          if (/^(container|wrapper|wrap|inner|outer|row|col|content|main|section|block|box|item|list|group|div)$/i.test(cls)) continue;
+          
+          const score = classPathCount[cls] || 0;
+          // Prefer classes that appear in fewer paths (more specific)
+          // On tie, prefer deeper (later in reverse = current i is smaller, so earlier segment)
+          if (score < bestScore) {
+            bestScore = score;
+            bestClass = cls;
+          }
+        }
+      }
+      
+      // Fallback: use tag name of deepest element
+      if (!bestClass) {
+        const lastSeg = segments[segments.length - 1] || '';
+        bestClass = lastSeg.split('.')[0] || 'field';
+      }
+      
+      // Clean up the name
+      let friendlyName = bestClass
+        .replace(/--/g, '-')     // collapse double dashes
+        .replace(/^-|-$/g, '')   // trim dashes
+        .replace(/-/g, '_');     // dashes to underscores
+      
+      if (suffix) friendlyName += ' ' + suffix;
+      
+      // Handle collisions — append counter
+      nameUsage[friendlyName] = (nameUsage[friendlyName] || 0) + 1;
+      if (nameUsage[friendlyName] > 1) {
+        friendlyName += ' ' + nameUsage[friendlyName];
+      }
+      
+      nameMap[path] = friendlyName;
+    });
+    
+    return nameMap;
+  }
+
+  /**
+   * Filter out noise columns from scraped data (ported from IDS)
+   * Removes: identical-value columns, very low fill-rate columns
+   */
+  function filterNoiseColumns(fields, rawData) {
+    return fields.filter(field => {
+      // Collect non-empty values for this field
+      const values = [];
+      rawData.forEach(row => {
+        const v = row[field];
+        if (v !== undefined && v !== null && v !== '') {
+          values.push(String(v).trim());
+        }
+      });
+      
+      // Drop columns with no data
+      if (values.length === 0) return false;
+      
+      // Drop columns where ALL values are identical (boilerplate: headers, footers, badges)
+      const unique = new Set(values);
+      if (unique.size === 1 && values.length > 2) return false;
+      
+      return true;
+    });
   }
 
   function updateDataTable(data) {
@@ -1271,27 +1396,22 @@
       return;
     }
     
-    // Use the short field names derived from state.fieldNames
-    // This ensures ALL fields are shown, even if some rows have empty values
-    const headers = [];
-    const fieldNameToShortName = {};
+    // Build headers from the data objects directly
+    // (keys are already friendly names from smart column naming or getShortFieldName)
+    let headers = [];
     
-    state.fieldNames.forEach(field => {
-      const shortName = getShortFieldName(field);
-      headers.push(shortName);
-      fieldNameToShortName[field] = shortName;
+    // Collect all unique keys from data (preserving order from first row)
+    const seen = new Set();
+    data.forEach(row => {
+      if (row && typeof row === 'object') {
+        Object.keys(row).forEach(key => {
+          if (!seen.has(key)) {
+            seen.add(key);
+            headers.push(key);
+          }
+        });
+      }
     });
-    
-    // If no fieldNames set yet, collect from data
-    if (headers.length === 0) {
-      const allKeys = new Set();
-      data.forEach(row => {
-        if (row && typeof row === 'object') {
-          Object.keys(row).forEach(key => allKeys.add(key));
-        }
-      });
-      headers.push(...Array.from(allKeys));
-    }
     
     if (headers.length === 0) {
       console.warn('[DropshipTracker] No valid headers found in data');
