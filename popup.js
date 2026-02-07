@@ -552,6 +552,7 @@
     $('#stopCrawlBtn').on('click', stopCrawl);
     $('#addToCatalogBtn').on('click', addToCatalog);
     $('#clearScrapedBtn').on('click', clearAllScrapedData);
+    $('#testScrapeBtn').on('click', testScrape);
     
     // Export buttons
     $('#exportXmlBtn').on('click', () => exportCSCart('xml'));
@@ -1662,6 +1663,126 @@
     
     setStatus(`Crawl complete. ${state.rawData.length} rows from ${state.pages} pages.`);
     showToast(`Scraped ${state.rawData.length} items from ${state.pages} pages`, 'success');
+  }
+
+  // ============================================
+  // TEST SCRAPE DIAGNOSTIC
+  // ============================================
+
+  /**
+   * Run a diagnostic test scrape on the current page.
+   * Shows field-by-field results in a modal:
+   *  - product extraction (title, price, images, rating, reviews, etc.)
+   *  - table extraction (row count, column names)
+   *  - extraction coverage score
+   *  - raw JSON data found in page scripts
+   */
+  function testScrape() {
+    $('#testScrapeLoading').show();
+    $('#testScrapeResults').hide();
+    $('#testScrapeModal').modal('show');
+
+    // Run product extraction + table extraction in parallel
+    let productResult = null;
+    let tableResult = null;
+    let done = 0;
+
+    function checkDone() {
+      done++;
+      if (done < 2) return;
+      renderTestDiagnostic(productResult, tableResult);
+    }
+
+    sendToContentScript({ action: 'extractProduct' }, (response) => {
+      productResult = response;
+      checkDone();
+    });
+
+    sendToContentScript({ action: 'getTableData', selector: state.tableSelector || '' }, (response) => {
+      tableResult = response;
+      checkDone();
+    });
+  }
+
+  function renderTestDiagnostic(product, table) {
+    $('#testScrapeLoading').hide();
+    $('#testScrapeResults').show();
+
+    // --- Product extraction ---
+    const criticalFields = [
+      { key: 'title', label: 'Title' },
+      { key: 'price', label: 'Price' },
+      { key: 'originalPrice', label: 'Original Price' },
+      { key: 'currency', label: 'Currency' },
+      { key: 'images', label: 'Images', format: v => Array.isArray(v) ? `${v.length} images` : 'none' },
+      { key: 'rating', label: 'Rating' },
+      { key: 'reviewCount', label: 'Review Count' },
+      { key: 'soldCount', label: 'Sold / Orders' },
+      { key: 'description', label: 'Description', format: v => v ? `${String(v).length} chars` : 'none' },
+      { key: 'category', label: 'Category' },
+      { key: 'brand', label: 'Brand' },
+      { key: 'sku', label: 'SKU / Product ID' },
+      { key: 'stock', label: 'Stock' },
+      { key: 'weight', label: 'Weight' },
+      { key: 'shipping', label: 'Shipping' },
+      { key: 'storeName', label: 'Store Name' },
+      { key: 'specifications', label: 'Specs', format: v => Array.isArray(v) ? `${v.length} specs` : (v ? 'yes' : 'none') },
+      { key: 'variants', label: 'Variants', format: v => Array.isArray(v) ? `${v.length} variants` : 'none' },
+    ];
+
+    let html = '<thead><tr><th>Field</th><th>Status</th><th>Value</th></tr></thead><tbody>';
+    let found = 0;
+    for (const f of criticalFields) {
+      const val = product ? product[f.key] : null;
+      const hasValue = val !== null && val !== undefined && val !== '' && 
+                       !(Array.isArray(val) && val.length === 0);
+      const display = hasValue ? (f.format ? f.format(val) : String(val).substring(0, 80)) : '';
+      const icon = hasValue
+        ? '<span class="glyphicon glyphicon-ok text-success"></span>'
+        : '<span class="glyphicon glyphicon-remove text-danger"></span>';
+      if (hasValue) found++;
+      html += `<tr><td>${f.label}</td><td>${icon}</td><td><small>${display}</small></td></tr>`;
+    }
+    html += '</tbody>';
+    $('#testProductTable').html(html);
+
+    // --- Table extraction ---
+    let tableSummary = '';
+    if (table && table.data && table.data.length > 0) {
+      const sampleRow = table.data[0];
+      const cols = Object.keys(sampleRow);
+      tableSummary = `<p><strong>${table.data.length}</strong> rows, <strong>${cols.length}</strong> columns</p>`;
+      tableSummary += '<ul class="list-unstyled" style="max-height:150px;overflow:auto;">';
+      for (const col of cols) {
+        const sampleVal = sampleRow[col] || '';
+        tableSummary += `<li><small><strong>${col}:</strong> ${String(sampleVal).substring(0, 60)}</small></li>`;
+      }
+      tableSummary += '</ul>';
+    } else {
+      tableSummary = '<p class="text-muted">No table detected. Click "Find Tables" first.</p>';
+    }
+    $('#testTableSummary').html(tableSummary);
+
+    // --- Score ---
+    const pct = Math.round((found / criticalFields.length) * 100);
+    const color = pct >= 70 ? 'success' : pct >= 40 ? 'warning' : 'danger';
+    let scoreHtml = `<div class="text-${color}"><strong>${found}/${criticalFields.length} fields extracted (${pct}%)</strong></div>`;
+    scoreHtml += `<div class="progress" style="margin-top:5px;"><div class="progress-bar progress-bar-${color}" style="width:${pct}%"></div></div>`;
+    if (pct < 70) {
+      scoreHtml += '<p class="text-muted" style="margin-top:5px;"><small>Tip: Try "Extract Product" on a product detail page. Use "Pick Selector" to map missing fields manually.</small></p>';
+    }
+    $('#testScrapeScore').html(scoreHtml);
+
+    // --- Raw JSON ---
+    const jsonFields = ['title', 'price', 'originalPrice', 'currency', 'sku', 'rating', 
+                        'reviewCount', 'brand', 'category', 'stock', 'shipping', 'orders'];
+    const jsonData = {};
+    for (const k of jsonFields) {
+      if (product && product[k] !== null && product[k] !== undefined) {
+        jsonData[k] = product[k];
+      }
+    }
+    $('#testJsonRaw').text(JSON.stringify(jsonData, null, 2));
   }
 
   // ============================================
