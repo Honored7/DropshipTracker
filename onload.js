@@ -315,29 +315,81 @@
     const children = Array.from(element.children);
     if (children.length < 3) return { count: 0, goodClasses: [] };
     
-    // Track class frequency
+    // Track class frequency — skip noise elements (IDS: script, img, meta, style)
+    // and skip empty-text children (IDS filters these before counting)
     const classFrequency = {};
+    const singleClassFrequency = {};
     
     children.forEach(child => {
-      if (['SCRIPT', 'STYLE', 'META'].includes(child.tagName)) return;
+      if (['SCRIPT', 'STYLE', 'META', 'IMG', 'NOSCRIPT', 'LINK'].includes(child.tagName)) return;
+      // IDS key insight: skip children with no visible text — they're decorative
+      if (!child.textContent || !child.textContent.trim().length) return;
       
       const classes = (child.className || '').toString().split(/\s+/).filter(c => c);
       const classKey = classes.sort().join(' ') || child.tagName.toLowerCase();
       
       classFrequency[classKey] = (classFrequency[classKey] || 0) + 1;
+      
+      // Also track individual class frequency (IDS fallback strategy)
+      classes.forEach(c => {
+        singleClassFrequency[c] = (singleClassFrequency[c] || 0) + 1;
+      });
     });
     
     // Find classes that appear frequently enough (lenient threshold from IDS)
     // Using length/2 - 2 instead of length * 0.5 to detect tables with
     // heterogeneous header/footer rows mixed in
     const threshold = Math.max(2, Math.floor(children.length / 2) - 2);
-    const goodClasses = Object.entries(classFrequency)
+    
+    // STRATEGY 1: Full class-set matching (primary)
+    let goodClasses = Object.entries(classFrequency)
       .filter(([_, count]) => count >= threshold)
       .map(([classes]) => classes);
     
-    if (goodClasses.length === 0) return { count: 0, goodClasses: [] };
+    // STRATEGY 2 (IDS fallback): Individual class matching
+    // When children share SOME classes but not all (e.g. "card card-featured" vs "card card-normal")
+    if (goodClasses.length === 0) {
+      const goodSingleClasses = Object.entries(singleClassFrequency)
+        .filter(([_, count]) => count >= threshold)
+        .map(([cls]) => cls);
+      
+      if (goodSingleClasses.length > 0) {
+        // Filter children that have at least one of the good individual classes
+        const matchingChildren = children.filter(child => {
+          if (['SCRIPT', 'STYLE', 'META', 'IMG', 'NOSCRIPT', 'LINK'].includes(child.tagName)) return false;
+          if (!child.textContent || !child.textContent.trim().length) return false;
+          const classes = (child.className || '').toString().split(/\s+/).filter(c => c);
+          return goodSingleClasses.some(gc => classes.includes(gc));
+        });
+        
+        if (matchingChildren.length >= 3) {
+          return {
+            count: matchingChildren.length,
+            goodClasses: goodSingleClasses
+          };
+        }
+      }
+    }
     
-    // Count children matching good classes
+    // STRATEGY 3 (IDS fallback): Return ALL non-empty children if no class patterns found
+    // IDS never gives up — it always returns something for elements with enough children
+    if (goodClasses.length === 0) {
+      const nonEmptyChildren = children.filter(child => {
+        if (['SCRIPT', 'STYLE', 'META', 'IMG', 'NOSCRIPT', 'LINK'].includes(child.tagName)) return false;
+        return child.textContent && child.textContent.trim().length > 0;
+      });
+      
+      if (nonEmptyChildren.length >= 3) {
+        return {
+          count: nonEmptyChildren.length,
+          goodClasses: [] // Empty = accept all when filtering in getTableData
+        };
+      }
+      
+      return { count: 0, goodClasses: [] };
+    }
+    
+    // Count children matching good classes (Strategy 1 succeeded)
     const consistentChildren = children.filter(child => {
       const classes = (child.className || '').toString().split(/\s+/).filter(c => c);
       const classKey = classes.sort().join(' ') || child.tagName.toLowerCase();
