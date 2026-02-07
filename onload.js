@@ -512,7 +512,7 @@
         const cls = (row.className || '').toString().toLowerCase();
         if (/\b(ad|ads|advert|banner|promo|sponsor)\b/.test(cls)) return;
         
-        const rowData = extractElementData(row, '', { comprehensive: true });
+        const rowData = extractElementData(row, '', { mode: 'table' });
         rowData._rowIndex = index;
         rowData._supplierProductId = extractProductIdFromElement(row);
         rowData._supplierSku = extractSupplierSku(row);
@@ -530,16 +530,68 @@
   }
   
   /**
-   * Recursively extract all data from element
-   * COMPREHENSIVE MODE: Capture everything, filter later in popup
-   * Enhanced with semantic hints for better auto-mapping
+   * Recursively extract data from element
+   *
+   * TWO MODES (ported from IDS analysis):
+   *
+   * mode: 'table' (default for list/table scraping)
+   *   IDS-like extraction — only captures 3 things per element:
+   *   1. Direct text (own text, not from children)
+   *   2. href property (on anchors)
+   *   3. src property (on images)
+   *   This produces clean, column-friendly data with 5-15 columns instead of 50+.
+   *
+   * mode: 'product' (for single product detail pages)
+   *   Full comprehensive extraction — text, href, src, data-*, alt, title,
+   *   combined @link fields, image deduplication, etc.
+   *   Preserved for extractProductDetails() which needs rich data.
    */
   function extractElementData(element, path, options = {}) {
+    const mode = options.mode || 'product'; // 'table' or 'product'
     const data = {};
     const tag = element.tagName.toLowerCase();
     const classes = (element.className || '').toString().trim().split(/\s+/).filter(c => c).slice(0, 2);
     
     const currentPath = path + '/' + tag + (classes.length ? '.' + classes.join('.') : '');
+    
+    // =====================================================
+    // TABLE MODE: IDS-like lean extraction (text + href + src)
+    // =====================================================
+    if (mode === 'table') {
+      // 1. Direct text — IDS approach: clone, remove children, get remaining text
+      // Using text-node filtering (equivalent without jQuery)
+      const directText = Array.from(element.childNodes)
+        .filter(node => node.nodeType === Node.TEXT_NODE)
+        .map(node => node.textContent.trim())
+        .filter(t => t)
+        .join(' ');
+      
+      if (directText) {
+        data[currentPath] = directText;
+      }
+      
+      // 2. href — on anchor tags
+      if (element.tagName === 'A' && element.href) {
+        data[currentPath + ' href'] = element.href;
+      }
+      
+      // 3. src — on images and other elements with src
+      if (element.src) {
+        data[currentPath + ' src'] = element.src;
+      }
+      
+      // Recurse into children (skip noise)
+      for (const child of element.children) {
+        if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(child.tagName)) continue;
+        Object.assign(data, extractElementData(child, currentPath, options));
+      }
+      
+      return data;
+    }
+    
+    // =====================================================
+    // PRODUCT MODE: Full comprehensive extraction
+    // =====================================================
     
     // Get text content (direct, not from children)
     const directText = Array.from(element.childNodes)
@@ -552,32 +604,24 @@
       data[currentPath] = directText;
     }
     
-    // Get ALL attributes in comprehensive mode (for table scraping)
-    // Only filter in restrictive mode (for single product pages)
-    const comprehensiveMode = options.comprehensive !== false;
-    
     // For <a> tags, capture text + href together as a combined field
     if (element.tagName === 'A' && element.href) {
       const linkText = element.textContent?.trim();
-      if (comprehensiveMode || isValidProductUrl(element.href)) {
-        const href = comprehensiveMode ? element.href : cleanProductUrl(element.href);
-        data[currentPath + ' @href'] = href;
-        // Combined link field for easier mapping
-        if (linkText && linkText.length > 3 && linkText.length < 300) {
-          data[currentPath + ' @link'] = linkText + ' ||| ' + href;
-        }
+      const href = element.href;
+      data[currentPath + ' @href'] = href;
+      // Combined link field for easier mapping
+      if (linkText && linkText.length > 3 && linkText.length < 300) {
+        data[currentPath + ' @link'] = linkText + ' ||| ' + href;
       }
     } else if (element.href) {
-      if (comprehensiveMode || isValidProductUrl(element.href)) {
-        data[currentPath + ' @href'] = comprehensiveMode ? element.href : cleanProductUrl(element.href);
-      }
+      data[currentPath + ' @href'] = element.href;
     }
     
-    // Capture ALL images in comprehensive mode - with deduplication
+    // Capture images with deduplication
     const seenImages = options._seenImages || new Set();
     if (element.src) {
       const normalizedSrc = normalizeImageUrl(element.src);
-      if (!seenImages.has(normalizedSrc) && (comprehensiveMode || isValidImageUrl(element.src))) {
+      if (!seenImages.has(normalizedSrc)) {
         seenImages.add(normalizedSrc);
         data[currentPath + ' @src'] = element.src;
       }
@@ -599,7 +643,6 @@
     // Get data attributes
     for (const attr of element.attributes) {
       if (attr.name.startsWith('data-') && attr.value && attr.value.length < 500) {
-        // Skip only the most egregious tracking attributes
         const skipAttrs = ['data-spm', 'data-aplus', 'data-beacon'];
         if (!skipAttrs.some(s => attr.name.startsWith(s))) {
           data[currentPath + ' @' + attr.name] = attr.value;
