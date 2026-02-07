@@ -13,22 +13,56 @@ body {
 .navbar {
   margin-bottom: 0;
   border-radius: 0;
-  min-height: 40px;
+  min-height: 44px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  border: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
 
 .navbar-brand {
-  padding: 8px 15px;
+  padding: 10px 15px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Fancy gradient text for brand name */
+.navbar-brand .brand-text {
+  background: linear-gradient(135deg, #00d9ff 0%, #00ff88 50%, #ffdd00 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-weight: 800;
+  text-shadow: none;
+}
+
+/* Animated logo icon */
+.navbar-brand .brand-logo {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, #00d9ff 0%, #00ff88 100%);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 16px;
-  font-weight: 600;
-  color: #333 !important;
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(0, 217, 255, 0.5); }
+  50% { box-shadow: 0 0 15px rgba(0, 255, 136, 0.7); }
 }
 
 .navbar-brand img {
-  margin-top: -2px;
+  display: none; /* Hide original icon, using CSS logo instead */
 }
 
 .navbar-text {
-  margin-top: 10px;
+  margin-top: 12px;
   margin-bottom: 10px;
 }
 
@@ -38,6 +72,12 @@ body {
   align-items: center;
   gap: 6px;
   padding-right: 15px;
+  color: rgba(255,255,255,0.8);
+  font-size: 12px;
+}
+
+.sync-text {
+  color: rgba(255,255,255,0.8);
 }
 
 .sync-indicator {
@@ -119,7 +159,35 @@ body {
   height: 300px;
   border: 1px solid #ddd;
   margin-bottom: 15px;
-  overflow: auto;
+  overflow: hidden !important; /* Prevent outer container scrollbar */
+  position: relative;
+}
+
+/* Ensure Handsontable takes full width */
+#dataPreview .handsontable {
+  width: 100% !important;
+}
+
+/* Force single scrollbar - only in wtHolder */
+#dataPreview .wtHolder {
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+}
+
+/* Hide any left clone/frozen area that might appear as extra scrollbar */
+#dataPreview .ht_clone_left,
+#dataPreview .ht_clone_top_left_corner {
+  display: none !important;
+}
+
+/* Remove any shadows that look like borders/scrollbars */
+#dataPreview .handsontable .wtSpreader {
+  box-shadow: none !important;
+}
+
+/* Prevent overflow on the main wrapper */
+#dataPreview .wtHider {
+  overflow: hidden !important;
 }
 
 /* Field Mapping Section */
@@ -592,3 +660,77 @@ body {
 #catalogGrid .handsontable {
   width: max-content !important;
 }
+
+/* ============================================
+   EMOJI ICON REPLACEMENTS FOR GLYPHICONS
+   Bootstrap's glyphicon fonts are not bundled
+   ============================================ */
+
+/* Hide the original glyphicon placeholder */
+.glyphicon {
+  font-family: inherit;
+  font-style: normal;
+  font-weight: normal;
+  display: inline-block;
+  min-width: 1em;
+  text-align: center;
+}
+
+/* Replace glyphicons with emoji equivalents */
+.glyphicon-search::before { content: "🔍"; }
+.glyphicon-list::before { content: "📋"; }
+.glyphicon-globe::before { content: "🌐"; }
+.glyphicon-cog::before { content: "⚙️"; }
+.glyphicon-th::before { content: "📊"; }
+.glyphicon-forward::before { content: "⏭️"; }
+.glyphicon-download-alt::before { content: "📥"; }
+.glyphicon-refresh::before { content: "🔄"; }
+.glyphicon-trash::before { content: "🗑️"; }
+.glyphicon-plus::before { content: "➕"; }
+.glyphicon-screenshot::before { content: "🎯"; }
+.glyphicon-play::before { content: "▶️"; }
+.glyphicon-stop::before { content: "⏹️"; }
+.glyphicon-transfer::before { content: "🔀"; }
+.glyphicon-flash::before { content: "⚡"; }
+.glyphicon-export::before { content: "📤"; }
+.glyphicon-list-alt::before { content: "📝"; }
+.glyphicon-cloud-upload::before { content: "☁️"; }
+.glyphicon-copy::before { content: "📋"; }
+.glyphicon-download::before { content: "⬇️"; }
+.glyphicon-check::before { content: "✅"; }
+.glyphicon-unchecked::before { content: "⬜"; }
+.glyphicon-random::before { content: "🔀"; }
+.glyphicon-filter::before { content: "🔽"; }
+.glyphicon-remove-circle::before { content: "❌"; }
+.glyphicon-info-sign::before { content: "ℹ️"; }
+.glyphicon-warning-sign::before { content: "⚠️"; }
+.glyphicon-cloud::before { content: "☁️"; }
+.glyphicon-log-in::before { content: "🔑"; }
+.glyphicon-log-out::before { content: "🚪"; }
+.glyphicon-usd::before { content: "💰"; }
+.glyphicon-shopping-cart::before { content: "🛒"; }
+.glyphicon-floppy-disk::before { content: "💾"; }
+.glyphicon-link::before { content: "🔗"; }
+.glyphicon-upload::before { content: "📤"; }
+.glyphicon-eye-open::before { content: "👁️"; }
+.glyphicon-pencil::before { content: "✏️"; }
+.glyphicon-ok::before { content: "✔️"; }
+.glyphicon-remove::before { content: "✖️"; }
+.glyphicon-star::before { content: "⭐"; }
+.glyphicon-heart::before { content: "❤️"; }
+.glyphicon-time::before { content: "🕐"; }
+.glyphicon-folder-open::before { content: "📂"; }
+.glyphicon-file::before { content: "📄"; }
+.glyphicon-user::before { content: "👤"; }
+.glyphicon-home::before { content: "🏠"; }
+.glyphicon-question-sign::before { content: "❓"; }
+.glyphicon-exclamation-sign::before { content: "❗"; }
+.glyphicon-tags::before { content: "🏷️"; }
+.glyphicon-picture::before { content: "🖼️"; }
+.glyphicon-camera::before { content: "📷"; }
+.glyphicon-film::before { content: "🎬"; }
+.glyphicon-bookmark::before { content: "🔖"; }
+.glyphicon-envelope::before { content: "✉️"; }
+.glyphicon-phone::before { content: "📞"; }
+.glyphicon-calendar::before { content: "📅"; }
+.glyphicon-map-marker::before { content: "📍"; }

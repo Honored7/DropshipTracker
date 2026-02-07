@@ -66,11 +66,11 @@ const CSCartXMLBuilder = (function() {
     
     // Description - wrap in CDATA for HTML content
     if (product.description) {
-      xml += `      <description><![CDATA[${product.description}]]></description>\n`;
+      xml += `      <description><![CDATA[${escapeCDATA(product.description)}]]></description>\n`;
     }
     
     if (product.short_description) {
-      xml += `      <short_description><![CDATA[${product.short_description}]]></short_description>\n`;
+      xml += `      <short_description><![CDATA[${escapeCDATA(product.short_description)}]]></short_description>\n`;
     }
     
     // Images - multiple images separated by delimiter
@@ -139,7 +139,7 @@ const CSCartXMLBuilder = (function() {
       xml += `          <date>${escapeXml(review.date)}</date>\n`;
     }
     if (review.text) {
-      xml += `          <text><![CDATA[${review.text}]]></text>\n`;
+      xml += `          <text><![CDATA[${escapeCDATA(review.text)}]]></text>\n`;
     }
     if (review.country) {
       xml += `          <country>${escapeXml(review.country)}</country>\n`;
@@ -256,6 +256,15 @@ const CSCartXMLBuilder = (function() {
       .replace(/'/g, '&apos;');
   }
 
+  /**
+   * Escape CDATA closing sequence to prevent injection
+   * Splits ]]> into ]]]]><![CDATA[>
+   */
+  function escapeCDATA(str) {
+    if (!str) return '';
+    return String(str).replace(/\]\]>/g, ']]]]><![CDATA[>');
+  }
+
   // Public API
   return {
     build,
@@ -265,7 +274,8 @@ const CSCartXMLBuilder = (function() {
     formatCategory,
     formatImages,
     formatPrice,
-    escapeXml
+    escapeXml,
+    escapeCDATA
   };
 })();
 

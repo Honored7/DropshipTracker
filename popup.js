@@ -59,9 +59,12 @@
   // ============================================
   
   $(document).ready(function() {
-    // Parse URL params
+    // Parse URL params with validation
     const params = new URLSearchParams(window.location.search);
-    state.tabId = parseInt(params.get('tabid'));
+    const rawTabId = params.get('tabid');
+    state.tabId = rawTabId ? parseInt(rawTabId, 10) : null;
+    if (isNaN(state.tabId)) state.tabId = null;
+    
     state.tabUrl = decodeURIComponent(params.get('url') || '');
     
     // Extract domain for persistent mappings
@@ -82,6 +85,23 @@
     initializeCatalogTable();
     bindEvents();
     checkDriveAuth();
+    
+    // Listen for messages from content script (e.g., selector picker results)
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.action === 'selectorPickerResult') {
+        handleSelectorPickerResult(message);
+      }
+    });
+    
+    // Cleanup on popup close - prevent memory leaks
+    window.addEventListener('beforeunload', () => {
+      if (state.dataTable) {
+        try { state.dataTable.destroy(); } catch(e) {}
+      }
+      if (state.catalogTable) {
+        try { state.catalogTable.destroy(); } catch(e) {}
+      }
+    });
     
     console.log("[DropshipTracker] Popup initialized for tab", state.tabId, "domain:", state.tabDomain);
   });
@@ -105,6 +125,10 @@
         tabUrl: state.tabUrl
       }
     }, () => {
+      if (chrome.runtime.lastError) {
+        console.error('[DropshipTracker] Failed to save scraped data:', chrome.runtime.lastError);
+        return;
+      }
       console.log('[DropshipTracker] Scraped data saved:', state.data.length, 'items');
     });
   }
@@ -115,6 +139,10 @@
    */
   function loadScrapedData() {
     chrome.storage.local.get(['scrapedSession'], (result) => {
+      if (chrome.runtime.lastError) {
+        console.error('[DropshipTracker] Failed to load scraped data:', chrome.runtime.lastError);
+        return;
+      }
       if (result.scrapedSession && result.scrapedSession.data?.length > 0) {
         const session = result.scrapedSession;
         const hourAgo = Date.now() - (60 * 60 * 1000);
@@ -251,7 +279,7 @@
     state.dataTable = new Handsontable(container, {
       data: [],
       colHeaders: true,
-      rowHeaders: true,
+      rowHeaders: false,  // Disable row headers to fix double scrollbar issue
       height: 300,
       width: '100%',
       stretchH: 'none',  // Allow horizontal scrolling for many columns
@@ -264,15 +292,59 @@
           'preview': {
             name: '👁️ Preview',
             callback: function(key, selection) {
-              const row = selection[0].start.row;
-              previewScrapedRow(row);
+              // Convert visual row to physical row (handles sorting/filtering)
+              const visualRow = selection[0].start.row;
+              const physicalRow = this.toPhysicalRow(visualRow);
+              previewScrapedRow(physicalRow);
             }
           },
           'delete_row': {
             name: '🗑️ Delete Row',
             callback: function(key, selection) {
-              const rows = selection.map(s => s.start.row).sort((a, b) => b - a);
-              rows.forEach(row => deleteScrapedRow(row));
+              const hot = this;
+              console.log('[DropshipTracker] Delete row selection:', JSON.stringify(selection));
+              console.log('[DropshipTracker] Data length before:', state.data.length);
+              
+              // Collect unique physical rows from all selected ranges
+              const physicalRows = [];
+              selection.forEach(sel => {
+                for (let r = sel.start.row; r <= sel.end.row; r++) {
+                  // toPhysicalRow may not exist in basic setup
+                  const physicalRow = (hot.toPhysicalRow && typeof hot.toPhysicalRow === 'function') 
+                    ? hot.toPhysicalRow(r) 
+                    : r;
+                  if (physicalRow >= 0 && physicalRow < state.data.length && !physicalRows.includes(physicalRow)) {
+                    physicalRows.push(physicalRow);
+                  }
+                }
+              });
+              
+              console.log('[DropshipTracker] Physical rows to delete:', physicalRows);
+              
+              if (physicalRows.length === 0) {
+                showToast('No valid rows selected', 'warning');
+                return;
+              }
+              
+              // Sort descending to delete from end first (preserves earlier indices)
+              physicalRows.sort((a, b) => b - a);
+              
+              // Delete one by one from the end
+              physicalRows.forEach(rowIdx => {
+                state.data.splice(rowIdx, 1);
+                if (state.rawData && Array.isArray(state.rawData) && state.rawData.length > rowIdx) {
+                  state.rawData.splice(rowIdx, 1);
+                }
+              });
+              
+              console.log('[DropshipTracker] Data length after:', state.data.length);
+              
+              // Reload table with a copy of the data
+              hot.loadData(state.data.length > 0 ? [...state.data] : []);
+              updateExportButtons();
+              $('#rowCount').text(state.data.length);
+              saveScrapedData();
+              showToast(`Deleted ${physicalRows.length} row(s)`, 'info');
             }
           },
           'separator': '---------',
@@ -288,6 +360,32 @@
         if (source === 'edit') {
           updateExportButtons();
         }
+      },
+      // Handle action button clicks in scraped data table
+      afterOnCellMouseDown: function(event, coords, td) {
+        const target = event.target;
+        if (target.matches('[data-action]') || target.closest('[data-action]')) {
+          event.stopPropagation();
+          const btn = target.matches('[data-action]') ? target : target.closest('[data-action]');
+          const action = btn.dataset.action;
+          const physicalRow = this.toPhysicalRow(coords.row);
+
+          if (action === 'preview') {
+            previewScrapedRow(physicalRow);
+          } else if (action === 'delete') {
+            if (physicalRow >= 0 && physicalRow < state.data.length) {
+              state.data.splice(physicalRow, 1);
+              if (state.rawData && Array.isArray(state.rawData) && state.rawData.length > physicalRow) {
+                state.rawData.splice(physicalRow, 1);
+              }
+              updateDataTable(state.data);
+              updateExportButtons();
+              $('#rowCount').text(state.data.length);
+              saveScrapedData();
+              showToast('Row deleted', 'info');
+            }
+          }
+        }
       }
     });
   }
@@ -297,54 +395,56 @@
     
     state.catalogTable = new Handsontable(container, {
       data: [],
-      colHeaders: ['✓', 'Image', 'Product Code', 'Title', 'Supplier', 'Supplier Price', 'Your Price', 'Stock', 'Rating', 'Category', 'Last Checked', 'Actions'],
+      colHeaders: ['✓', 'Image', 'Code', 'Title', 'Supplier', 'Price', 'Your $', 'Stock', 'Rating', 'Reviews', 'Sold', 'Category', 'Checked', 'Actions'],
       columns: [
         { data: 'selected', type: 'checkbox', className: 'htCenter', width: 30 },
         { 
           data: 'thumbnail',
           readOnly: true,
-          width: 50,
+          width: 45,
           renderer: function(instance, td, row, col, prop, value, cellProperties) {
-            // Show thumbnail image
             const images = instance.getSourceDataAtRow(row)?.images;
             const firstImage = images ? (Array.isArray(images) ? images[0] : images.split(',')[0]) : '';
             if (firstImage && firstImage.startsWith('http')) {
-              td.innerHTML = `<img src="${firstImage}" style="max-width:40px;max-height:40px;object-fit:cover;" onerror="this.style.display='none'" />`;
+              td.innerHTML = `<img src="${firstImage}" style="max-width:38px;max-height:38px;object-fit:cover;" onerror="this.style.display='none'" />`;
             } else {
               td.innerHTML = '<span style="color:#ccc">📷</span>';
             }
             return td;
           }
         },
-        { data: 'productCode', readOnly: true, width: 90 },
-        { data: 'title', readOnly: true, width: 180 },
-        { data: 'domain', readOnly: true, width: 80 },
-        { data: 'supplierPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, readOnly: true, width: 80 },
-        { data: 'yourPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, width: 80 },
-        { data: 'stock', type: 'numeric', readOnly: true, width: 50 },
+        { data: 'productCode', readOnly: true, width: 80 },
+        { data: 'title', readOnly: true, width: 140 },
+        { data: 'domain', readOnly: true, width: 65 },
+        { data: 'supplierPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, readOnly: true, width: 60 },
+        { data: 'yourPrice', type: 'numeric', numericFormat: { pattern: '$0,0.00' }, width: 60 },
+        { data: 'stock', type: 'numeric', readOnly: true, width: 45 },
         { 
           data: 'rating',
           readOnly: true,
-          width: 60,
+          width: 50,
           renderer: function(instance, td, row, col, prop, value, cellProperties) {
             const rating = value || instance.getSourceDataAtRow(row)?.rating;
-            const reviewCount = instance.getSourceDataAtRow(row)?.review_count;
             if (rating) {
-              td.innerHTML = `⭐${rating}${reviewCount ? ` (${reviewCount})` : ''}`;
+              td.innerHTML = `⭐${rating}`;
+              td.style.textAlign = 'center';
             } else {
               td.innerHTML = '-';
+              td.style.textAlign = 'center';
+              td.style.color = '#ccc';
             }
             return td;
           }
         },
-        { data: 'category', readOnly: true, width: 100 },
-        { data: 'lastCheckedFormatted', readOnly: true, width: 80 },
+        { data: 'review_count', readOnly: true, width: 55, className: 'htCenter' },
+        { data: 'sold_count', readOnly: true, width: 55, className: 'htCenter' },
+        { data: 'category', readOnly: true, width: 75 },
+        { data: 'lastCheckedFormatted', readOnly: true, width: 65 },
         { 
           data: 'actions',
           readOnly: true,
-          width: 110,
+          width: 85,
           renderer: function(instance, td, row, col, prop, value, cellProperties) {
-            // Action buttons - CSP compliant with data attributes
             td.innerHTML = '<div class="row-actions">' +
               '<button class="btn btn-xs btn-info btn-scrape-details" data-action="scrape" data-row="' + row + '" title="Scrape Full Details">🔍</button>' +
               '<button class="btn btn-xs btn-default btn-preview" data-action="preview" data-row="' + row + '" title="Preview">👁️</button>' +
@@ -460,6 +560,20 @@
     $('#copyClipboardBtn').on('click', copyToClipboard);
     $('#downloadRawBtn').on('click', downloadRawXlsx);
     
+    // Cart template selection - disable XML for templates that don't support it
+    $('#cartTemplateSelect').on('change', function() {
+      const templateId = $(this).val();
+      const supportsXml = typeof CartTemplateRegistry !== 'undefined' && CartTemplateRegistry.supportsXML(templateId);
+      $('#exportXmlBtn').prop('disabled', !supportsXml && state.data.length === 0)
+        .toggleClass('btn-success', supportsXml)
+        .toggleClass('btn-default', !supportsXml);
+      if (!supportsXml) {
+        $('#exportXmlBtn').attr('title', 'This format does not support XML export');
+      } else {
+        $('#exportXmlBtn').attr('title', '');
+      }
+    });
+
     // Field mapping
     $('#autoMapBtn').on('click', autoMapFields);
     
@@ -540,6 +654,25 @@
   // ============================================
   
   /**
+   * Handle selector picker result from content script
+   */
+  function handleSelectorPickerResult(message) {
+    if (message.success) {
+      // Selector picked successfully
+      state.customSelectors[message.field] = {
+        selector: message.selector,
+        sampleValue: message.sampleValue,
+        savedAt: Date.now()
+      };
+      saveCustomSelectors();
+      updateCustomSelectorsList();
+      showToast(`✓ Selector saved for "${message.field}": ${message.sampleValue?.substring(0, 50)}...`, 'success');
+    } else if (message.cancelled) {
+      showToast('Selector picking cancelled', 'info');
+    }
+  }
+  
+  /**
    * Start the selector picker to let user click on page elements
    */
   function startPickSelector() {
@@ -555,21 +688,24 @@
           <div class="modal-content">
             <div class="modal-header">
               <button type="button" class="close" data-dismiss="modal">&times;</button>
-              <h4 class="modal-title">Pick Element Selector</h4>
+              <h4 class="modal-title">🎯 Pick Element Selector</h4>
             </div>
             <div class="modal-body">
               <p>Select the field you want to define a custom selector for:</p>
               <select id="pickerFieldSelect" class="form-control">
                 ${fieldOptions}
               </select>
-              <p class="text-muted" style="margin-top:10px;font-size:12px;">
-                After clicking "Start Picking", click on any element on the page.
-                The selector will be saved and used for future scrapes on this site.
-              </p>
+              <div class="alert alert-info" style="margin-top:12px;font-size:12px;padding:8px;">
+                <strong>Works on any page!</strong><br>
+                • <strong>List pages:</strong> Improves table scraping<br>
+                • <strong>Product pages:</strong> Used by Extract Product<br>
+                <hr style="margin:6px 0;">
+                Hover over elements to preview, click to select. Press <kbd>ESC</kbd> to cancel.
+              </div>
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
-              <button type="button" class="btn btn-primary" id="startPickingBtn">Start Picking</button>
+              <button type="button" class="btn btn-primary" id="startPickingBtn">🎯 Start Picking</button>
             </div>
           </div>
         </div>
@@ -589,21 +725,12 @@
       }
       
       $('#pickSelectorModal').modal('hide');
-      showToast(`Click on the "${field}" element on the page. Press ESC to cancel.`, 'info');
       
       sendToContentScript({ action: 'startSelectorPicker', field: field }, (response) => {
-        if (response && response.success) {
-          // Selector picked successfully
-          state.customSelectors[response.field] = {
-            selector: response.selector,
-            sampleValue: response.sampleValue,
-            savedAt: Date.now()
-          };
-          saveCustomSelectors();
-          updateCustomSelectorsList();
-          showToast(`Selector saved for "${response.field}": ${response.sampleValue?.substring(0, 50)}...`, 'success');
-        } else if (response && response.cancelled) {
-          showToast('Selector picking cancelled', 'info');
+        if (response && response.started) {
+          showToast(`Picker active for "${field}". Click element on page or ESC to cancel.`, 'info');
+        } else {
+          showToast('Failed to start selector picker. Reload the page and try again.', 'danger');
         }
       });
     });
@@ -664,24 +791,44 @@
 
   function extractProduct() {
     setStatus('Extracting product details...');
+    showLoading('Extracting product details...');
     
     sendToContentScript({ action: 'extractProduct' }, (response) => {
       if (response && (response.title || response.productId)) {
         // Convert to row format
+        // Sanitize response data if SanitizeService is available
+        const sanitized = typeof SanitizeService !== 'undefined'
+          ? SanitizeService.sanitizeProduct(response)
+          : response;
+        
         const row = {
-          'Product ID': response.productId || '',
-          'Title': response.title || '',
-          'Price': response.price || '',
-          'Currency': response.currency || 'USD',
-          'Description': response.descriptionText || '',
-          'Images': (response.images || []).join('|||'),
-          'URL': response.url || '',
-          'Domain': response.domain || '',
-          'Variants': JSON.stringify(response.variants || []),
-          'Reviews': (response.reviews || []).length + ' reviews',
-          'Shipping': response.shipping || '',
-          'Brand': response.brand || '',
-          'SKU': response.sku || ''
+          'Product ID': sanitized.productId || '',
+          'Title': sanitized.title || '',
+          'Price': sanitized.price || '',
+          'Original Price': sanitized.originalPrice || '',
+          'Currency': sanitized.currency || 'USD',
+          'Short Description': sanitized.shortDescription || '',
+          'Description': sanitized.descriptionText || sanitized.description || '',
+          'Full Description': sanitized.fullDescription || '',
+          'Category': sanitized.category || '',
+          'Images': (sanitized.images || []).join('|||'),
+          'URL': sanitized.url || '',
+          'Domain': sanitized.domain || '',
+          'Variants': JSON.stringify(sanitized.variants || []),
+          'Reviews': (sanitized.reviews || []).length + ' reviews',
+          'Rating': sanitized.rating || '',
+          'Review Count': sanitized.reviewCount || '',
+          'Sold': sanitized.soldCount || '',
+          'Brand': sanitized.brand || '',
+          'SKU': sanitized.sku || '',
+          'Stock': sanitized.stock || '',
+          'Weight': sanitized.weight || '',
+          'Shipping': sanitized.shippingText || sanitized.shipping || '',
+          'Shipping Cost': sanitized.shippingCost || '',
+          'Store': sanitized.storeName || '',
+          'Store Rating': sanitized.storeRating || '',
+          'Video URLs': (sanitized.videoUrls || []).join('|||'),
+          'Specifications': JSON.stringify(sanitized.specifications || [])
         };
         
         // Check if product already exists in scraped data (by ID or URL)
@@ -719,9 +866,11 @@
         
         // Auto-save scraped data
         saveScrapedData();
+        hideLoading();
       } else {
         setStatus('Could not extract product details');
         showToast('No product data found. Make sure you\'re on a product page.', 'warning');
+        hideLoading();
       }
     });
   }
@@ -853,18 +1002,30 @@
                 
                 if (response && (response.productId || response.title)) {
                   // Update catalog with enriched data
+                  // Sanitize scraped data
+                  const sanitized = typeof SanitizeService !== 'undefined'
+                    ? SanitizeService.sanitizeProduct(response)
+                    : response;
+                  
                   const updates = {
-                    title: response.title || product.title,
-                    description: response.description || product.description,
-                    descriptionText: response.descriptionText || product.descriptionText,
-                    images: response.images?.length > 0 ? response.images : product.images,
-                    variants: response.variants?.length > 0 ? response.variants : product.variants,
-                    variantGroups: response.variantGroups || product.variantGroups,
-                    reviews: response.reviews?.length > 0 ? response.reviews : product.reviews,
-                    shipping: response.shipping || product.shipping,
-                    brand: response.brand || product.brand,
-                    sku: response.sku || product.sku,
-                    supplierPrice: response.price ? parsePrice(response.price) : product.supplierPrice,
+                    title: sanitized.title || product.title,
+                    description: sanitized.description || product.description,
+                    fullDescription: sanitized.fullDescription || product.fullDescription,
+                    descriptionText: sanitized.descriptionText || product.descriptionText,
+                    shortDescription: sanitized.shortDescription || product.shortDescription,
+                    images: sanitized.images?.length > 0 ? sanitized.images : product.images,
+                    variants: sanitized.variants?.length > 0 ? sanitized.variants : product.variants,
+                    variantGroups: sanitized.variantGroups || product.variantGroups,
+                    reviews: sanitized.reviews?.length > 0 ? sanitized.reviews : product.reviews,
+                    rating: sanitized.rating || product.rating,
+                    reviewCount: sanitized.reviewCount || sanitized.review_count || product.reviewCount || product.review_count,
+                    soldCount: sanitized.soldCount || sanitized.sold_count || product.soldCount || product.sold_count,
+                    shipping: sanitized.shipping || product.shipping,
+                    brand: sanitized.brand || product.brand,
+                    sku: sanitized.sku || product.sku,
+                    supplierPrice: sanitized.price ? parsePrice(sanitized.price) : product.supplierPrice,
+                    videoUrls: sanitized.videoUrls || product.videoUrls || [],
+                    specifications: sanitized.specifications || product.specifications || [],
                     lastChecked: Date.now(),
                     lastEnriched: Date.now()
                   };
@@ -894,16 +1055,21 @@
         });
       }, 500); // Check tab status every 500ms
       
-      // Timeout after 30 seconds
+      // Timeout after 30 seconds — close orphan tab and report error
       setTimeout(() => {
         clearInterval(checkInterval);
+        try { chrome.tabs.remove(tabId); } catch(e) {}
+        showToast('Product scraping timed out after 30s', 'warning');
+        setStatus('Scraping timed out');
+        // Invoke onComplete callback for queue-based scraping
+        if (typeof onComplete === 'function') onComplete();
       }, 30000);
     });
   }
 
   /**
    * Scrape details for selected catalog products
-   * Rate-limited to avoid overwhelming the browser
+   * Uses async callback queue to properly wait for each scrape to complete
    */
   function scrapeSelectedProducts() {
     const selected = getSelectedCatalogRows();
@@ -933,19 +1099,14 @@
       
       const rowIndex = selected[currentIndex];
       setStatus(`Scraping ${currentIndex + 1}/${selected.length}: ${state.catalog[rowIndex]?.title?.substring(0, 30)}...`);
-      
-      scrapeProductDetails(rowIndex);
       currentIndex++;
       
-      // Wait 5 seconds before next scrape to be respectful
-      if (currentIndex < selected.length) {
-        setTimeout(scrapeNext, 5000);
-      } else {
-        setTimeout(() => {
-          setStatus(`Completed scraping ${selected.length} products`);
-          showToast(`✓ Finished scraping ${selected.length} products`, 'success');
-        }, 3000);
-      }
+      // Wait 5 seconds then scrape next — scrapeProductDetails gets onComplete callback
+      setTimeout(() => {
+        scrapeNext();
+      }, 5000);
+      
+      scrapeProductDetails(rowIndex);
     }
     
     scrapeNext();
@@ -988,12 +1149,43 @@
     
     // Lower threshold: Keep fields that appear in at least 10% of rows (was 20%)
     const threshold = Math.max(1, rawData.length * FIELD_THRESHOLD);
-    const allGoodFields = Object.entries(fieldCounts)
+    let allGoodFields = Object.entries(fieldCounts)
       .filter(([_, count]) => count >= threshold)
       .sort((a, b) => b[1] - a[1])
       .map(([field]) => field);
     
-    console.log('[DropshipTracker] Good fields after threshold:', allGoodFields.length);
+    // === COLUMN DEDUPLICATION ===
+    // Group columns by their actual data values and keep only the best from each group
+    const valueFingerprints = {};
+    allGoodFields.forEach(field => {
+      const values = [];
+      for (let i = 0; i < Math.min(rawData.length, 20); i++) {
+        const v = rawData[i][field];
+        if (v !== undefined && v !== null && v !== '') {
+          values.push(String(v).trim().substring(0, 100));
+        }
+      }
+      const fingerprint = values.join('||||');
+      if (fingerprint && fingerprint.length > 0) {
+        if (!valueFingerprints[fingerprint]) {
+          valueFingerprints[fingerprint] = field;
+        } else {
+          // Duplicate — prefer the shorter/cleaner path name
+          const existing = valueFingerprints[fingerprint];
+          if (field.length < existing.length) {
+            valueFingerprints[fingerprint] = field;
+          }
+        }
+      }
+    });
+    const dedupedFields = new Set(Object.values(valueFingerprints));
+    const beforeDedup = allGoodFields.length;
+    allGoodFields = allGoodFields.filter(f => dedupedFields.has(f));
+    if (beforeDedup !== allGoodFields.length) {
+      console.log(`[DropshipTracker] Column dedup: ${beforeDedup} → ${allGoodFields.length} fields`);
+    }
+    
+    console.log('[DropshipTracker] Good fields after threshold + dedup:', allGoodFields.length);
     
     // Store all fields for "expand" functionality
     state.allFieldNames = allGoodFields;
@@ -1079,18 +1271,27 @@
       return;
     }
     
-    // Collect ALL unique keys from the display data (which uses short names)
-    const allKeys = new Set();
-    data.forEach(row => {
-      if (row && typeof row === 'object') {
-        Object.keys(row).forEach(key => {
-          if (key && row[key] !== undefined && row[key] !== null && row[key] !== '') {
-            allKeys.add(key);
-          }
-        });
-      }
+    // Use the short field names derived from state.fieldNames
+    // This ensures ALL fields are shown, even if some rows have empty values
+    const headers = [];
+    const fieldNameToShortName = {};
+    
+    state.fieldNames.forEach(field => {
+      const shortName = getShortFieldName(field);
+      headers.push(shortName);
+      fieldNameToShortName[field] = shortName;
     });
-    const headers = Array.from(allKeys);
+    
+    // If no fieldNames set yet, collect from data
+    if (headers.length === 0) {
+      const allKeys = new Set();
+      data.forEach(row => {
+        if (row && typeof row === 'object') {
+          Object.keys(row).forEach(key => allKeys.add(key));
+        }
+      });
+      headers.push(...Array.from(allKeys));
+    }
     
     if (headers.length === 0) {
       console.warn('[DropshipTracker] No valid headers found in data');
@@ -1098,23 +1299,48 @@
       return;
     }
     
-    // Convert data to array format
-    const arrayData = data.map(row => headers.map(h => {
-      const val = row[h];
-      return val !== undefined && val !== null ? String(val) : '';
-    }));
+    // Add Actions as last column
+    headers.push('Actions');
     
-    // Calculate dynamic column widths based on header length and content
-    const colWidths = headers.map(h => {
+    // Convert data to array format - use empty string for missing values
+    const arrayData = data.map(row => {
+      const rowData = headers.slice(0, -1).map(h => {
+        const val = row[h];
+        return val !== undefined && val !== null ? String(val) : '';
+      });
+      rowData.push(''); // Placeholder for Actions column
+      return rowData;
+    });
+    
+    // Calculate dynamic column widths based on header length
+    const colWidths = headers.map((h) => {
+      if (h === 'Actions') return 70;
       const headerLen = (h || '').length * 8;
-      return Math.max(80, Math.min(250, headerLen + 30));
+      return Math.max(80, Math.min(200, headerLen + 20));
+    });
+    
+    // Build column configs - Actions column gets a custom renderer
+    const columns = headers.map((h) => {
+      if (h === 'Actions') {
+        return {
+          readOnly: true,
+          renderer: function(instance, td, row, col, prop, value, cellProperties) {
+            td.innerHTML = '<div class="row-actions">' +
+              '<button class="btn btn-xs btn-default" data-action="preview" title="Preview">👁️</button>' +
+              '<button class="btn btn-xs btn-danger" data-action="delete" title="Delete">🗑️</button>' +
+              '</div>';
+            return td;
+          }
+        };
+      }
+      return { readOnly: false };
     });
     
     state.dataTable.updateSettings({
       colHeaders: headers,
       data: arrayData,
       colWidths: colWidths,
-      columns: headers.map(() => ({ readOnly: false }))
+      columns: columns
     });
     
     // Force render to ensure table displays
@@ -1122,7 +1348,7 @@
     
     // Update status
     console.log(`[DropshipTracker] Data table updated: ${data.length} rows, ${headers.length} columns`);
-    console.log('[DropshipTracker] Headers:', headers);
+    console.log('[DropshipTracker] Headers:', headers.slice(0, 10), '... (total:', headers.length, ')');
   }
 
   function locateNextButton() {
@@ -1246,7 +1472,9 @@
     { id: 'specifications', label: 'Specifications' },
     { id: 'min_order', label: 'Minimum Order' },
     { id: 'store_name', label: 'Store/Seller Name' },
-    { id: 'store_rating', label: 'Store Rating' }
+    { id: 'store_rating', label: 'Store Rating' },
+    { id: 'video_urls', label: 'Video URLs' },
+    { id: 'full_description', label: 'Full Description (HTML)' }
   ];
 
   function showFieldMapping() {
@@ -1536,10 +1764,10 @@
           shouldSelect = product.variants && product.variants.length > 0;
           break;
         case 'today':
-          shouldSelect = product.addedAt && (now - product.addedAt) < dayMs;
+          shouldSelect = product.addedDate && (now - product.addedDate) < dayMs;
           break;
         case 'week':
-          shouldSelect = product.addedAt && (now - product.addedAt) < weekMs;
+          shouldSelect = product.addedDate && (now - product.addedDate) < weekMs;
           break;
         default:
           shouldSelect = false;
@@ -1576,8 +1804,11 @@
     
     // Set image
     const imageUrl = combined.Image || combined.image || combined.images?.[0] || '';
-    if (imageUrl) {
-      $('#previewImage').html(`<img src="${imageUrl}" alt="Product">`);
+    if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('http')) {
+      const img = document.createElement('img');
+      img.src = imageUrl;
+      img.alt = 'Product';
+      $('#previewImage').empty().append(img);
     } else {
       $('#previewImage').html('<div class="text-muted text-center"><span class="glyphicon glyphicon-picture" style="font-size:60px;color:#ccc;"></span><br>No image</div>');
     }
@@ -1585,9 +1816,16 @@
     // Set gallery (no inline onclick - using event delegation)
     const images = combined.images || [];
     if (images.length > 1) {
-      $('#previewGallery').html(images.slice(0, 10).map((img, i) => 
-        `<img src="${img}" alt="Image ${i+1}" class="${i===0?'active':''}">`
-      ).join(''));
+      const $gallery = $('#previewGallery').empty();
+      images.slice(0, 10).forEach((imgUrl, i) => {
+        if (typeof imgUrl === 'string' && imgUrl.startsWith('http')) {
+          const img = document.createElement('img');
+          img.src = imgUrl;
+          img.alt = 'Image ' + (i + 1);
+          if (i === 0) img.className = 'active';
+          $gallery.append(img);
+        }
+      });
     } else {
       $('#previewGallery').empty();
     }
@@ -1644,17 +1882,27 @@
     if (typeof images === 'string') {
       images = images.split(',').map(i => i.trim()).filter(i => i && i.startsWith('http'));
     }
-    if (images.length > 0) {
-      $('#previewImage').html(`<img src="${images[0]}" alt="Product">`);
+    if (images.length > 0 && typeof images[0] === 'string' && images[0].startsWith('http')) {
+      const img = document.createElement('img');
+      img.src = images[0];
+      img.alt = 'Product';
+      $('#previewImage').empty().append(img);
     } else {
       $('#previewImage').html('<div class="text-muted text-center"><span class="glyphicon glyphicon-picture" style="font-size:60px;color:#ccc;"></span><br>No image</div>');
     }
     
     // Set gallery (no inline onclick - using event delegation)
     if (images.length > 1) {
-      $('#previewGallery').html(images.slice(0, 10).map((img, i) => 
-        `<img src="${img}" alt="Image ${i+1}" class="${i===0?'active':''}">`
-      ).join(''));
+      const $gallery = $('#previewGallery').empty();
+      images.slice(0, 10).forEach((imgUrl, i) => {
+        if (typeof imgUrl === 'string' && imgUrl.startsWith('http')) {
+          const img = document.createElement('img');
+          img.src = imgUrl;
+          img.alt = 'Image ' + (i + 1);
+          if (i === 0) img.className = 'active';
+          $gallery.append(img);
+        }
+      });
     } else {
       $('#previewGallery').empty();
     }
@@ -1683,7 +1931,7 @@
       </div>
       <div class="detail-row">
         <span class="detail-label">Added:</span>
-        <span class="detail-value">${product.addedAt ? new Date(product.addedAt).toLocaleString() : 'Unknown'}</span>
+        <span class="detail-value">${product.addedDate ? new Date(product.addedDate).toLocaleString() : 'Unknown'}</span>
       </div>
     `;
     
@@ -1751,7 +1999,7 @@
   }
   
   /**
-   * Delete single scraped row
+   * Delete single scraped row (used by preview modal)
    */
   function deleteScrapedRow(rowIndex) {
     if (rowIndex < 0 || rowIndex >= state.data.length) return;
@@ -1759,9 +2007,13 @@
     state.data.splice(rowIndex, 1);
     state.rawData.splice(rowIndex, 1);
     
-    state.dataTable.loadData(state.data);
+    // Safely reload table
+    if (state.dataTable) {
+      state.dataTable.loadData(state.data.length > 0 ? state.data : []);
+    }
     updateExportButtons();
     $('#rowCount').text(state.data.length);
+    saveScrapedData();
     showToast('Row deleted', 'info');
   }
   
@@ -1899,13 +2151,16 @@
         .map(i => i.trim())
         .filter(i => i && i.startsWith('http'));
       
+      // Parse shipping cost for price calculation
+      const shippingCostValue = parsePrice(getMappedValue('shipping_cost') || '');
+      
       return {
         productCode: productCode,
         supplierProductId: supplierProductId, // AliExpress/Alibaba item ID
         supplierSku: supplierSku, // Supplier's SKU
         title: getMappedValue('product_name') || rawRow.Title || 'Untitled Product',
         supplierPrice: price,
-        yourPrice: calculateSellingPrice(price),
+        yourPrice: calculateSellingPrice(price, shippingCostValue),
         listPrice: parsePrice(getMappedValue('list_price') || rawRow['List Price'] || ''),
         stock: parseInt(getMappedValue('quantity')) || 999,
         category: getMappedValue('category') || state.settings?.defaultCategory || '',
@@ -1918,11 +2173,12 @@
         color: getMappedValue('color') || '',
         size: getMappedValue('size') || '',
         shipping: getMappedValue('shipping') || rawRow.Shipping || '',
-        shippingCost: parsePrice(getMappedValue('shipping_cost') || ''),
+        shippingCost: shippingCostValue,
         brand: getMappedValue('brand') || rawRow.Brand || '',
         // Reviews data
         rating: getMappedValue('rating') || rawRow.Rating || '',
-        review_count: getMappedValue('review_count') || getMappedValue('sold_count') || rawRow.Reviews || rawRow['Review Count'] || '',
+        reviewCount: getMappedValue('review_count') || rawRow.Reviews || rawRow['Review Count'] || '',
+        soldCount: getMappedValue('sold_count') || rawRow['Sold'] || rawRow['Orders'] || '',
         reviews: getMappedValue('reviews') || rawRow['Review Text'] || '',
         // Store info
         storeName: getMappedValue('store_name') || '',
@@ -1932,8 +2188,11 @@
         meta_description: getMappedValue('meta_description') || '',
         // Attributes
         attributes: getMappedValue('attributes') || '',
-        specifications: getMappedValue('specifications') || '',
-        minOrder: getMappedValue('min_order') || ''
+        specifications: getMappedValue('specifications') || rawRow.Specifications || '',
+        minOrder: getMappedValue('min_order') || '',
+        // New fields
+        videoUrls: getMappedValue('video_urls') || rawRow['Video URLs'] || '',
+        fullDescription: getMappedValue('full_description') || rawRow['Full Description'] || ''
       };
     });
     
@@ -2022,17 +2281,35 @@
       return;
     }
     
-    // Map data to CS-Cart format
-    const products = mapToCSCart(state.data, state.rawData);
+    const templateId = $('#cartTemplateSelect').val() || 'cscart';
+    const template = typeof CartTemplateRegistry !== 'undefined' ? CartTemplateRegistry.get(templateId) : null;
     
     if (format === 'xml') {
-      const xml = CSCartXMLBuilder.build(products, state.settings);
-      downloadFile(xml, 'cscart-products.xml', 'application/xml');
-      showToast('CS-Cart XML exported', 'success');
+      if (template && !CartTemplateRegistry.supportsXML(templateId)) {
+        showToast(template.name + ' does not support XML export. Use CSV instead.', 'warning');
+        return;
+      }
+      // XML always uses CS-Cart format (or template-specific if available)
+      const products = mapToCSCart(state.data, state.rawData);
+      const xml = template && template.toXML
+        ? template.toXML(products, state.settings)
+        : CSCartXMLBuilder.build(products, state.settings);
+      downloadFile(xml, templateId + '-products.xml', 'application/xml');
+      showToast(template ? template.name + ' XML exported' : 'XML exported', 'success');
     } else {
-      const csv = CSCartMapper.toCSV(products);
-      downloadFile(csv, 'cscart-products.csv', 'text/csv');
-      showToast('CS-Cart CSV exported', 'success');
+      // CSV uses selected template
+      if (template && template.mapProduct && template.toCSV) {
+        const mapped = mapToCSCart(state.data, state.rawData);
+        const templateProducts = mapped.map(p => template.mapProduct(p, state.settings));
+        const csv = template.toCSV(templateProducts, state.settings);
+        downloadFile(csv, templateId + '-products.csv', 'text/csv');
+        showToast(template.name + ' CSV exported', 'success');
+      } else {
+        const products = mapToCSCart(state.data, state.rawData);
+        const csv = CSCartMapper.toCSV(products);
+        downloadFile(csv, 'cscart-products.csv', 'text/csv');
+        showToast('CS-Cart CSV exported', 'success');
+      }
     }
   }
 
@@ -2046,17 +2323,31 @@
       return;
     }
     
+    const templateId = $('#cartTemplateSelect').val() || 'cscart';
+    const template = typeof CartTemplateRegistry !== 'undefined' ? CartTemplateRegistry.get(templateId) : null;
     const products = selected.map(p => CSCartMapper.fromCatalog(p, state.settings));
     
     if (format === 'xml') {
-      const xml = CSCartXMLBuilder.build(products, state.settings);
-      downloadFile(xml, 'cscart-catalog.xml', 'application/xml');
+      if (template && !CartTemplateRegistry.supportsXML(templateId)) {
+        showToast(template.name + ' does not support XML export. Use CSV instead.', 'warning');
+        return;
+      }
+      const xml = template && template.toXML
+        ? template.toXML(products, state.settings)
+        : CSCartXMLBuilder.build(products, state.settings);
+      downloadFile(xml, templateId + '-catalog.xml', 'application/xml');
     } else {
-      const csv = CSCartMapper.toCSV(products);
-      downloadFile(csv, 'cscart-catalog.csv', 'text/csv');
+      if (template && template.mapProduct && template.toCSV) {
+        const templateProducts = products.map(p => template.mapProduct(p, state.settings));
+        const csv = template.toCSV(templateProducts, state.settings);
+        downloadFile(csv, templateId + '-catalog.csv', 'text/csv');
+      } else {
+        const csv = CSCartMapper.toCSV(products);
+        downloadFile(csv, 'cscart-catalog.csv', 'text/csv');
+      }
     }
     
-    showToast(`Exported ${selected.length} products as ${format.toUpperCase()}`, 'success');
+    showToast(`Exported ${selected.length} products as ${template ? template.name : 'CS-Cart'} ${format.toUpperCase()}`, 'success');
   }
 
   function mapToCSCart(data, rawData) {
@@ -2073,21 +2364,40 @@
         return '';
       };
       
-      const supplierPrice = parsePrice(getMappedValue('price') || raw.Price);
+      const supplierPrice = CSCartMapper.parsePrice(getMappedValue('price') || raw.Price);
+      const shippingCostValue = CSCartMapper.parsePrice(getMappedValue('shipping_cost') || raw['Shipping Cost'] || '');
+      
+      // Build options string from variants if available
+      const variantsRaw = getMappedValue('variants') || raw.Variants || '';
+      let variants = [];
+      try { variants = typeof variantsRaw === 'string' ? JSON.parse(variantsRaw) : variantsRaw; } catch(e) {}
+      const optionsStr = Array.isArray(variants) && variants.length > 0
+        ? CSCartXMLBuilder.buildOptions(variants, '', state.settings?.cscartDelimiter || '///')
+        : '';
+      
+      const productName = getMappedValue('product_name') || raw.Title || 'Untitled';
       
       return {
         product_code: getMappedValue('product_code') || raw._productId || `SKU-${Date.now()}-${index}`,
-        product_name: getMappedValue('product_name') || raw.Title || 'Untitled',
-        price: calculateSellingPrice(supplierPrice),
-        list_price: parsePrice(getMappedValue('list_price')),
+        product_name: productName,
+        price: calculateSellingPrice(parseFloat(supplierPrice), parseFloat(shippingCostValue)),
+        list_price: CSCartMapper.parsePrice(getMappedValue('list_price') || raw['Original Price'] || ''),
         quantity: parseInt(getMappedValue('quantity')) || 999,
-        category: getMappedValue('category') || state.settings?.defaultCategory || 'Products',
+        category: getMappedValue('category') || raw.Category || state.settings?.defaultCategory || 'Products',
         description: getMappedValue('description') || raw.Description || '',
-        short_description: getMappedValue('short_description') || '',
+        short_description: getMappedValue('short_description') || raw['Short Description'] || CSCartMapper.extractShortDescription(getMappedValue('description') || raw.Description || ''),
         images: getMappedValue('images') || raw.Images || '',
         weight: parseFloat(getMappedValue('weight')) || 0,
         status: state.settings?.defaultStatus || 'A',
         language: state.settings?.defaultLanguage || 'en',
+        brand: getMappedValue('brand') || raw.Brand || '',
+        rating: getMappedValue('rating') || raw.Rating || '',
+        review_count: getMappedValue('review_count') || raw['Review Count'] || '',
+        reviews: raw.reviews || '',
+        options: optionsStr,
+        meta_keywords: getMappedValue('meta_keywords') || CSCartMapper.extractKeywords(productName),
+        meta_description: getMappedValue('meta_description') || CSCartMapper.truncate(productName, 160),
+        shipping_freight: shippingCostValue || '',
         // Supplier tracking
         supplier_url: getMappedValue('url') || raw.URL || state.tabUrl,
         supplier_price: supplierPrice
@@ -2260,6 +2570,7 @@
     $('#syncInterval').val(state.settings.syncInterval || 360);
     $('#defaultMargin').val(state.settings.defaultMargin || 30);
     $('#marginType').val(state.settings.marginType || 'percent');
+    $('#includeShippingInCost').prop('checked', state.settings.includeShippingInCost !== false); // default true
     $('#currency').val(state.settings.currency || 'USD');
     $('#roundPrices').prop('checked', state.settings.roundPrices !== false);
     $('#roundTo').val(state.settings.roundTo || '0.99');
@@ -2276,6 +2587,7 @@
       syncInterval: parseInt($('#syncInterval').val()),
       defaultMargin: parseFloat($('#defaultMargin').val()),
       marginType: $('#marginType').val(),
+      includeShippingInCost: $('#includeShippingInCost').is(':checked'),
       currency: $('#currency').val(),
       roundPrices: $('#roundPrices').is(':checked'),
       roundTo: parseFloat($('#roundTo').val()),
@@ -2543,20 +2855,84 @@
   // ============================================
   
   function sendToContentScript(message, callback) {
-    if (!state.tabId) {
-      console.error('No tab ID');
-      callback({ error: 'No tab ID' });
+    if (!state.tabId || typeof state.tabId !== 'number') {
+      console.error('[DropshipTracker] No valid tab ID');
+      showToast('Cannot communicate with page. Refresh and reopen extension.', 'danger');
+      callback({ error: 'No valid tab ID' });
       return;
     }
     
     chrome.tabs.sendMessage(state.tabId, message, (response) => {
       if (chrome.runtime.lastError) {
-        console.error('Message error:', chrome.runtime.lastError);
-        callback({ error: chrome.runtime.lastError.message });
+        const errorMsg = chrome.runtime.lastError.message || 'Unknown error';
+        console.error('[DropshipTracker] Message error:', errorMsg);
+        
+        // Try to inject content script if it doesn't exist
+        if (errorMsg.includes('Receiving end does not exist') || errorMsg.includes('Could not establish connection')) {
+          console.log('[DropshipTracker] Attempting to inject content script...');
+          injectContentScript(() => {
+            // Retry the message after injection
+            setTimeout(() => {
+              chrome.tabs.sendMessage(state.tabId, message, (retryResponse) => {
+                if (chrome.runtime.lastError) {
+                  showToast('Content script injection failed. Please refresh the page.', 'danger');
+                  callback({ error: chrome.runtime.lastError.message });
+                } else {
+                  callback(retryResponse || {});
+                }
+              });
+            }, 500);
+          });
+          return;
+        }
+        callback({ error: errorMsg });
         return;
       }
       callback(response || {});
     });
+  }
+  
+  /**
+   * Programmatically inject content script into the current tab
+   */
+  function injectContentScript(callback) {
+    // Ping first to avoid double-injection
+    chrome.tabs.sendMessage(state.tabId, { action: 'ping' }, (response) => {
+      if (!chrome.runtime.lastError && response && response.pong) {
+        console.log('[DropshipTracker] Content script already loaded, skipping injection');
+        callback && callback();
+        return;
+      }
+      // Not loaded yet — inject
+      chrome.scripting.executeScript({
+        target: { tabId: state.tabId },
+        files: ['js/jquery-3.1.1.min.js', 'js/sha256.min.js', 'onload.js']
+      }).then(() => {
+        console.log('[DropshipTracker] Content script injected successfully');
+        chrome.scripting.insertCSS({
+          target: { tabId: state.tabId },
+          files: ['onload.css']
+        }).then(() => {
+          callback && callback();
+        }).catch(e => {
+          console.error('[DropshipTracker] CSS injection failed:', e);
+          callback && callback();
+        });
+      }).catch(e => {
+        console.error('[DropshipTracker] Script injection failed:', e);
+        showToast('Could not inject script. Page may be restricted.', 'danger');
+        callback && callback();
+      });
+    });
+  }
+
+  function showLoading(text) {
+    $('#loadingText').text(text || 'Loading...');
+    $('#loadingOverlay').css('display', 'flex');
+  }
+
+  function hideLoading() {
+    $('#loadingOverlay').hide();
   }
 
   function setStatus(text) {
@@ -2589,29 +2965,38 @@
   }
 
   function parsePrice(priceStr) {
+    // Delegate to CSCartMapper's more robust implementation
+    if (typeof CSCartMapper !== 'undefined') {
+      return parseFloat(CSCartMapper.parsePrice(priceStr)) || 0;
+    }
+    // Fallback if CSCartMapper not loaded
     if (typeof priceStr === 'number') return priceStr;
     if (!priceStr) return 0;
-    
-    // Remove currency symbols and extract number
     const cleaned = priceStr.toString().replace(/[^0-9.,]/g, '');
-    // Handle European format (1.234,56) vs US format (1,234.56)
     const normalized = cleaned.includes(',') && cleaned.indexOf(',') > cleaned.indexOf('.')
       ? cleaned.replace('.', '').replace(',', '.')
       : cleaned.replace(',', '');
-    
     return parseFloat(normalized) || 0;
   }
 
-  function calculateSellingPrice(supplierPrice) {
+  function calculateSellingPrice(supplierPrice, shippingCost = 0) {
     if (!supplierPrice || !state.settings) return supplierPrice;
+    
+    // Start with supplier price
+    let costBasis = parseFloat(supplierPrice) || 0;
+    
+    // Add shipping to cost basis if enabled (default: true)
+    if (state.settings.includeShippingInCost !== false && shippingCost > 0) {
+      costBasis += parseFloat(shippingCost) || 0;
+    }
     
     let price;
     const margin = state.settings.defaultMargin || 30;
     
     if (state.settings.marginType === 'percent') {
-      price = supplierPrice * (1 + margin / 100);
+      price = costBasis * (1 + margin / 100);
     } else {
-      price = supplierPrice + margin;
+      price = costBasis + margin;
     }
     
     // Round if enabled

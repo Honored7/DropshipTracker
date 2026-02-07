@@ -1,9 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "DropshipTracker - CS-Cart Product Sync",
-  "version": "1.3.3",
-  "description": "Scrape products from any supplier site, track prices/stock, and export to CS-Cart XML/CSV format with Google Drive sync",
-  "author": "Your Name",
+  "name": "DropshipTracker - Multi-Cart Product Sync",
+  "version": "2.0.0",
+  "description": "Scrape products from any supplier site, track prices/stock, and export to CS-Cart, Shopify, WooCommerce, PrestaShop, Magento, or BigCommerce CSV/XML format with Google Drive sync",
+  "author": "DropshipTracker",
+  
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   
   "permissions": [
     "activeTab",
@@ -11,6 +17,7 @@
     "identity",
     "alarms",
     "downloads",
+    "scripting",
     "webRequest"
   ],
   
@@ -30,7 +37,11 @@
   },
   
   "action": {
-    "default_title": "DropshipTracker"
+    "default_title": "DropshipTracker",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png"
+    }
   },
   
   "content_scripts": [

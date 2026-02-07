@@ -3,14 +3,46 @@
  * Handles: popup window creation, periodic sync alarms, message routing
  */
 
+// Track the popup window ID to prevent multiple windows
+let popupWindowId = null;
+
 // Open popup as separate window when extension icon clicked
 chrome.action.onClicked.addListener(function(tab) {
+  const popupUrl = chrome.runtime.getURL("popup.html?tabid=" + encodeURIComponent(tab.id) + "&url=" + encodeURIComponent(tab.url));
+
+  if (popupWindowId !== null) {
+    chrome.windows.get(popupWindowId, { populate: true }, function(win) {
+      if (chrome.runtime.lastError || !win) {
+        popupWindowId = null;
+        createPopupWindow(popupUrl);
+      } else {
+        chrome.windows.update(popupWindowId, { focused: true });
+        if (win.tabs && win.tabs.length > 0) {
+          chrome.tabs.update(win.tabs[0].id, { url: popupUrl });
+        }
+      }
+    });
+  } else {
+    createPopupWindow(popupUrl);
+  }
+});
+
+function createPopupWindow(url) {
   chrome.windows.create({
-    url: chrome.runtime.getURL("popup.html?tabid=" + encodeURIComponent(tab.id) + "&url=" + encodeURIComponent(tab.url)),
+    url: url,
     type: "popup",
     width: 900,
     height: 700
+  }, function(win) {
+    popupWindowId = win.id;
   });
+}
+
+// Clear tracked window ID when popup is closed
+chrome.windows.onRemoved.addListener(function(windowId) {
+  if (windowId === popupWindowId) {
+    popupWindowId = null;
+  }
 });
 
 // Setup periodic sync alarm (every 6 hours)
@@ -47,13 +79,23 @@ async function checkPriceStockUpdates() {
     );
     
     if (needsCheck.length > 0) {
-      // Store products needing update
-      await chrome.storage.local.set({ 
-        pendingChecks: needsCheck.map(p => p.supplierUrl) 
+      // Mark stale products and update badge
+      const updatedCatalog = catalog.map(p => {
+        if (!p.lastChecked || (now - p.lastChecked) > staleThreshold) {
+          return { ...p, needsUpdate: true };
+        }
+        return p;
       });
+      await chrome.storage.local.set({ catalog: updatedCatalog });
       
-      // Create notification
+      // Show badge with count of products needing update
+      chrome.action.setBadgeText({ text: String(needsCheck.length) });
+      chrome.action.setBadgeBackgroundColor({ color: '#FF6600' });
+      
       console.log(`[DropshipTracker] ${needsCheck.length} products need price/stock check`);
+    } else {
+      // Clear badge when no updates needed
+      chrome.action.setBadgeText({ text: '' });
     }
   } catch (error) {
     console.error("[DropshipTracker] Error checking price/stock:", error);
@@ -128,6 +170,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse(result);
       });
       return true;
+      
+    default:
+      // Unknown action - log and respond with error to prevent hanging
+      console.warn('[DropshipTracker] Unknown action:', request.action);
+      sendResponse({ error: 'Unknown action: ' + request.action });
+      return false;
   }
 });
 

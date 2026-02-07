@@ -25,7 +25,6 @@
     'aliexpress.com': {
       productIdPattern: /\/item\/(\d+)\.html/,
       productIdAttr: 'data-product-id',
-      // Updated selectors for 2026 AliExpress structure
       titleSelectors: [
         'h1[data-pl="product-title"]',
         '.product-title-text',
@@ -44,7 +43,15 @@
         '[class*="price"] [class*="current"]',
         '.product-price-value'
       ],
-      // Get ALL images, not just first
+      originalPriceSelectors: [
+        '[class*="Price--originalText"]',
+        '[class*="price--original"]',
+        '.product-price-original',
+        '[class*="price"] del',
+        '[class*="price"] s',
+        '[class*="price--compare"]',
+        '[class*="price"] [class*="del"]'
+      ],
       imageSelectors: [
         '.images-view-list img',
         '[class*="slider--wrap"] img',
@@ -64,7 +71,62 @@
         '[class*="reviewItem"]',
         '[class*="review-item"]'
       ],
-      shippingSelectors: ['.product-shipping', '[class*="Shipping"]', '[class*="delivery"]']
+      shippingSelectors: ['.product-shipping', '[class*="Shipping"]', '[class*="delivery"]'],
+      breadcrumbSelectors: [
+        '[class*="breadcrumb"] a',
+        '.breadcrumb a',
+        'nav[aria-label*="breadcrumb"] a',
+        '[class*="CategoryPath"] a',
+        '[class*="category-path"] a'
+      ],
+      storeSelectors: [
+        '[class*="store-name"]',
+        '[class*="StoreName"]',
+        '.shop-name a',
+        '[class*="shopName"]',
+        '[class*="seller-name"]'
+      ],
+      storeRatingSelectors: [
+        '[class*="store-rating"]',
+        '[class*="StoreRating"]',
+        '[class*="seller-rating"]',
+        '[class*="store"] [class*="score"]'
+      ],
+      stockSelectors: [
+        '[class*="quantity--info"]',
+        '[class*="stock"]',
+        '[class*="Quantity--available"]',
+        '[class*="inventory"]'
+      ],
+      descriptionSelectors: [
+        '.pdp-description-text',
+        '[class*="description"]',
+        '[class*="Description"]',
+        '#product-description',
+        '.product-description',
+        '[class*="detail-desc"]'
+      ],
+      specSelectors: [
+        '.pdp-mod-product-specs',
+        '[class*="specification"]',
+        '[class*="Specification"]',
+        '.product-specs',
+        '[class*="product-prop"]',
+        '.product-property-list'
+      ],
+      videoSelectors: [
+        'video source',
+        'iframe[src*="video"]',
+        '[class*="video"] video',
+        '[class*="Video"] source'
+      ],
+      // JSON data patterns embedded in page scripts
+      jsonPatterns: [
+        '_initData\\s*=\\s*(\\{[\\s\\S]*?\\})\\s*;',
+        '__INITIAL_STATE__\\s*=\\s*(\\{[\\s\\S]*?\\});',
+        'window\\.__state__\\s*=\\s*(\\{[\\s\\S]*?\\});',
+        'data:\\s*(\\{[\\s\\S]*?"offers"[\\s\\S]*?\\})'
+      ]
     },
     'alibaba.com': {
       productIdPattern: /\/product\/(\d+)\.html/,
@@ -80,6 +142,12 @@
         '[class*="price"]',
         '.module-pdp-price'
       ],
+      originalPriceSelectors: [
+        '[class*="price--original"]',
+        '[class*="ref-price"]',
+        '[class*="price"] del',
+        '[class*="price"] s'
+      ],
       imageSelectors: [
         '.detail-gallery-turn img',
         '.main-image img',
@@ -88,7 +156,54 @@
       ],
       variantSelectors: ['.sku-attr-item', '.obj-attr-item', '[class*="sku-prop"]'],
       reviewSelectors: ['.rating-item', '[class*="review"]'],
-      shippingSelectors: ['.shipping-content', '[class*="logistics"]']
+      shippingSelectors: ['.shipping-content', '[class*="logistics"]'],
+      breadcrumbSelectors: [
+        '.breadcrumb a',
+        '[class*="breadcrumb"] a',
+        'nav[aria-label*="breadcrumb"] a',
+        '.category-nav a'
+      ],
+      storeSelectors: [
+        '.company-name a',
+        '[class*="supplierName"]',
+        '[class*="company-name"]',
+        '.shop-name'
+      ],
+      storeRatingSelectors: [
+        '[class*="supplier-rating"]',
+        '[class*="score"]'
+      ],
+      stockSelectors: [
+        '[class*="stock"]',
+        '[class*="inventory"]'
+      ],
+      moqSelectors: [
+        '[class*="min-order"]',
+        '[class*="moq"]',
+        '[class*="minimum"]'
+      ],
+      descriptionSelectors: [
+        '.do-entry-item-description',
+        '[class*="description"]',
+        '[class*="Description"]',
+        '.module-pdp-desc'
+      ],
+      specSelectors: [
+        '[class*="Spec"]',
+        '.do-entry-item',
+        '.product-attr-list',
+        '.attribute-list'
+      ],
+      videoSelectors: [
+        'video source',
+        'iframe[src*="video"]'
+      ],
+      // JSON data patterns embedded in page scripts
+      jsonPatterns: [
+        '__INITIAL_STATE__\\s*=\\s*(\\{[\\s\\S]*?\\});?',
+        'window\\.__data__\\s*=\\s*(\\{[\\s\\S]*?\\});?',
+        '_init_data_\\s*=\\s*(\\{[\\s\\S]*?\\})'
+      ]
     }
   };
   
@@ -141,7 +256,7 @@
   
   /**
    * Table Detection Algorithm (from InstantDataScrapper)
-   * Scores elements by: area × childCount²
+   * Scores elements by: area * childCount^2
    * Higher score = more likely to be data table
    */
   function findTables(callback) {
@@ -163,7 +278,7 @@
       const childInfo = getConsistentChildren(element);
       if (childInfo.count < 3) return; // Need at least 3 items
       
-      // Score = area × childCount²
+      // Score = area * childCount^2
       const score = area * childInfo.count * childInfo.count;
       
       candidates.push({
@@ -212,8 +327,10 @@
       classFrequency[classKey] = (classFrequency[classKey] || 0) + 1;
     });
     
-    // Find classes that appear in at least 50% of children
-    const threshold = children.length * 0.5;
+    // Find classes that appear frequently enough (lenient threshold from IDS)
+    // Using length/2 - 2 instead of length * 0.5 to detect tables with
+    // heterogeneous header/footer rows mixed in
+    const threshold = Math.max(2, Math.floor(children.length / 2) - 2);
     const goodClasses = Object.entries(classFrequency)
       .filter(([_, count]) => count >= threshold)
       .map(([classes]) => classes);
@@ -332,27 +449,38 @@
       });
     }
     
-    // Extract data from each row - COMPREHENSIVE MODE
-    rowElements.forEach((row, index) => {
-      const rowData = extractElementData(row, '', { comprehensive: true });
-      rowData._rowIndex = index;
-      rowData._supplierProductId = extractProductIdFromElement(row);
-      rowData._supplierSku = extractSupplierSku(row);
-      rows.push(rowData);
-    });
-    
-    callback({
-      data: rows,
-      tableIndex: currentTableIndex,
-      tableSelector: table.selector,
-      rowCount: rows.length,
-      productId: extractProductId()
+    // Lazy-scroll each row element into view first (triggers lazy images/content)
+    // then extract data from each row in COMPREHENSIVE MODE
+    lazyScrollElements(rowElements, () => {
+      rowElements.forEach((row, index) => {
+        // Skip noise elements (nav, footer, header, ads)
+        const tag = row.tagName.toLowerCase();
+        if (['nav', 'footer', 'header', 'aside'].includes(tag)) return;
+        if (row.getAttribute('role') === 'navigation') return;
+        const cls = (row.className || '').toString().toLowerCase();
+        if (/\b(ad|ads|advert|banner|promo|sponsor)\b/.test(cls)) return;
+        
+        const rowData = extractElementData(row, '', { comprehensive: true });
+        rowData._rowIndex = index;
+        rowData._supplierProductId = extractProductIdFromElement(row);
+        rowData._supplierSku = extractSupplierSku(row);
+        rows.push(rowData);
+      });
+      
+      callback({
+        data: rows,
+        tableIndex: currentTableIndex,
+        tableSelector: table.selector,
+        rowCount: rows.length,
+        productId: extractProductId()
+      });
     });
   }
   
   /**
    * Recursively extract all data from element
    * COMPREHENSIVE MODE: Capture everything, filter later in popup
+   * Enhanced with semantic hints for better auto-mapping
    */
   function extractElementData(element, path, options = {}) {
     const data = {};
@@ -376,23 +504,41 @@
     // Only filter in restrictive mode (for single product pages)
     const comprehensiveMode = options.comprehensive !== false;
     
-    if (element.href) {
+    // For <a> tags, capture text + href together as a combined field
+    if (element.tagName === 'A' && element.href) {
+      const linkText = element.textContent?.trim();
+      if (comprehensiveMode || isValidProductUrl(element.href)) {
+        const href = comprehensiveMode ? element.href : cleanProductUrl(element.href);
+        data[currentPath + ' @href'] = href;
+        // Combined link field for easier mapping
+        if (linkText && linkText.length > 3 && linkText.length < 300) {
+          data[currentPath + ' @link'] = linkText + ' ||| ' + href;
+        }
+      }
+    } else if (element.href) {
       if (comprehensiveMode || isValidProductUrl(element.href)) {
         data[currentPath + ' @href'] = comprehensiveMode ? element.href : cleanProductUrl(element.href);
       }
     }
     
-    // Capture ALL images in comprehensive mode
+    // Capture ALL images in comprehensive mode - with deduplication
+    const seenImages = options._seenImages || new Set();
     if (element.src) {
-      if (comprehensiveMode || isValidImageUrl(element.src)) {
+      const normalizedSrc = normalizeImageUrl(element.src);
+      if (!seenImages.has(normalizedSrc) && (comprehensiveMode || isValidImageUrl(element.src))) {
+        seenImages.add(normalizedSrc);
         data[currentPath + ' @src'] = element.src;
       }
     }
     
-    // Get data-src (lazy loaded images)
+    // Get data-src (lazy loaded images) - deduplicated
     const dataSrc = element.getAttribute('data-src') || element.getAttribute('data-lazy-src');
     if (dataSrc && dataSrc.startsWith('http')) {
-      data[currentPath + ' @data-src'] = dataSrc;
+      const normalizedDataSrc = normalizeImageUrl(dataSrc);
+      if (!seenImages.has(normalizedDataSrc)) {
+        seenImages.add(normalizedDataSrc);
+        data[currentPath + ' @data-src'] = dataSrc;
+      }
     }
     
     if (element.alt) data[currentPath + ' @alt'] = element.alt;
@@ -417,13 +563,28 @@
       }
     }
     
-    // Recurse into children
+    // Recurse into children (skip noise)
     for (const child of element.children) {
-      if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(child.tagName)) continue;
-      Object.assign(data, extractElementData(child, currentPath, options));
+      if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(child.tagName)) continue;
+      Object.assign(data, extractElementData(child, currentPath, { ...options, _seenImages: seenImages }));
     }
     
     return data;
+  }
+  
+  /**
+   * Normalize image URL for deduplication
+   */
+  function normalizeImageUrl(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url);
+      // Remove common size/quality params
+      u.search = '';
+      return u.href.replace(/_\d+x\d+[^.]*/g, '').replace(/\?.*$/, '');
+    } catch (e) {
+      return url.replace(/\?.*$/, '');
+    }
   }
   
   /**
@@ -553,7 +714,343 @@
   }
   
   /**
+   * Parse a price string into a numeric value
+   */
+  function parsePriceText(text) {
+    if (!text) return null;
+    const pricePatterns = [
+      /[\$\u20AC\u00A3\u00A5\u20A6]\s*([\d,]+\.?\d*)/,     // $12.99, EUR12.99, etc.
+      /([\d,]+\.?\d*)\s*[\$\u20AC\u00A3\u00A5\u20A6]/,     // 12.99$
+      /(?:NGN|USD|EUR|GBP)\s*([\d,]+\.?\d*)/i,  // NGN 1234
+      /([\d,]+\.?\d*)\s*(?:NGN|USD|EUR|GBP)/i   // 1234 NGN
+    ];
+    for (const pattern of pricePatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const num = parseFloat(match[1].replace(/,/g, ''));
+        if (num > 0.01 && num < 10000000) return num;
+      }
+    }
+    return null;
+  }
+  
+  /**
+   * Detect currency from text or meta
+   */
+  function detectCurrency() {
+    // Try meta tags
+    const currencyMeta = document.querySelector(
+      'meta[property="product:price:currency"], meta[itemprop="priceCurrency"], meta[name="currency"]'
+    );
+    if (currencyMeta) return currencyMeta.content;
+    
+    // Try from price text on page
+    const priceEl = document.querySelector('[class*="price" i]');
+    if (priceEl) {
+      const text = priceEl.textContent || '';
+      if (text.includes('$') || /USD/i.test(text)) return 'USD';
+      if (text.includes('\u20AC') || /EUR/i.test(text)) return 'EUR';
+      if (text.includes('\u00A3') || /GBP/i.test(text)) return 'GBP';
+      if (text.includes('\u00A5') || /JPY|CNY/i.test(text)) return 'CNY';
+      if (text.includes('\u20A6') || /NGN/i.test(text)) return 'NGN';
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Extract product data from embedded JSON in page scripts
+   * This is 85-95% more stable than CSS selectors since JSON structures
+   * rarely change on site redesigns. Ported from cscart-export project.
+   */
+  function extractEmbeddedJSON(config) {
+    const result = {};
+    
+    // Try JSON patterns from site config
+    if (config && config.jsonPatterns) {
+      const scripts = document.querySelectorAll('script:not([type]), script[type="text/javascript"]');
+      for (const script of scripts) {
+        const text = script.textContent;
+        if (!text || text.length < 50) continue;
+        
+        for (const patternStr of config.jsonPatterns) {
+          try {
+            const regex = new RegExp(patternStr);
+            const match = text.match(regex);
+            if (match && match[1]) {
+              const jsonStr = match[1];
+              const data = JSON.parse(jsonStr);
+              mergeJSONProductData(result, data, config);
+              if (result.title && result.price) return result; // Got enough
+            }
+          } catch(e) {
+            // JSON parse failures are expected for partial matches
+          }
+        }
+      }
+    }
+    
+    return Object.keys(result).length > 0 ? result : null;
+  }
+  
+  /**
+   * Walk JSON data structure to find product fields
+   * Handles common e-commerce JSON structures from AliExpress, Alibaba, etc.
+   */
+  function mergeJSONProductData(result, data, config) {
+    if (!data || typeof data !== 'object') return;
+    
+    // Walk known paths for product data
+    const searchPaths = [
+      data,
+      data.data,
+      data.pageData,
+      data.productData,
+      data.product,
+      data.item,
+      data.storeModule,
+      data.priceModule,
+      data.titleModule,
+      data.descriptionModule
+    ].filter(Boolean);
+    
+    for (const obj of searchPaths) {
+      // Title
+      if (!result.title) {
+        result.title = obj.title || obj.name || obj.productTitle || 
+                       obj.subject || obj.productName || null;
+      }
+      
+      // Price
+      if (!result.price) {
+        const priceObj = obj.price || obj.priceInfo || obj.formatedActivityPrice || 
+                         obj.activityPrice || obj.minPrice || null;
+        if (typeof priceObj === 'object' && priceObj) {
+          result.price = priceObj.value || priceObj.minPrice || priceObj.formatedPrice || 
+                         priceObj.actPrice || priceObj.salePrice || null;
+          result.originalPrice = priceObj.originalPrice || priceObj.maxPrice || 
+                                 priceObj.formatedBiggestPrice || null;
+          result.currency = priceObj.currency || priceObj.currencySymbol || null;
+        } else if (priceObj) {
+          result.price = priceObj;
+        }
+      }
+      
+      // Images
+      if (!result.images || result.images.length === 0) {
+        const imgs = obj.images || obj.imagePathList || obj.imagePaths || 
+                     obj.gallery || obj.imageList || null;
+        if (Array.isArray(imgs) && imgs.length > 0) {
+          result.images = imgs.map(img => {
+            if (typeof img === 'string') return img.startsWith('//') ? 'https:' + img : img;
+            return img.url || img.src || img.imgUrl || '';
+          }).filter(Boolean).slice(0, 15);
+        }
+      }
+      
+      // SKU
+      if (!result.sku) {
+        result.sku = obj.sku || obj.productId || obj.itemId || null;
+      }
+      
+      // Category
+      if (!result.category && obj.breadcrumb) {
+        const crumbs = Array.isArray(obj.breadcrumb) ? obj.breadcrumb : [obj.breadcrumb];
+        result.category = crumbs
+          .map(c => typeof c === 'string' ? c : (c.name || c.title || ''))
+          .filter(Boolean).join(' > ');
+      }
+      
+      // Rating
+      if (!result.rating) {
+        result.rating = obj.averageStar || obj.averageRating || obj.rating || null;
+      }
+      if (!result.reviewCount) {
+        result.reviewCount = obj.totalReviews || obj.reviewCount || obj.tradeCount || null;
+      }
+      
+      // Specifications
+      if (!result.specifications && obj.specifications) {
+        result.specifications = obj.specifications;
+      }
+      if (!result.specifications && obj.properties) {
+        const props = Array.isArray(obj.properties) ? obj.properties : [];
+        result.specifications = props.map(p => ({
+          name: p.name || p.attrName || p.key || '',
+          value: p.value || p.attrValue || p.val || ''
+        })).filter(s => s.name && s.value);
+      }
+    }
+  }
+
+  /**
+   * Lazy-scroll rows into view before extraction
+   * Triggers lazy loading of images and dynamic content
+   * Ported from InstantDataScrapper's function E
+   */
+  function lazyScrollElements(elements, callback) {
+    if (!elements || elements.length === 0) {
+      callback();
+      return;
+    }
+    
+    // Adaptive delay: faster for fewer elements
+    const delay = elements.length > 50 ? 30 : elements.length > 20 ? 50 : 80;
+    let index = 0;
+    
+    function scrollNext() {
+      if (index >= elements.length) {
+        callback();
+        return;
+      }
+      
+      const el = elements[index];
+      if (el && el.scrollIntoView) {
+        el.scrollIntoView({ behavior: 'instant', block: 'center' });
+      }
+      index++;
+      setTimeout(scrollNext, delay);
+    }
+    
+    scrollNext();
+  }
+  
+  /**
+   * Find the nearest scrollable parent of an element
+   * Ported from InstantDataScrapper's function N
+   */
+  function findScrollableParent(element) {
+    let current = element;
+    while (current && current !== document.body && current !== document.documentElement) {
+      const style = window.getComputedStyle(current);
+      const overflowY = style.overflowY;
+      if ((overflowY === 'auto' || overflowY === 'scroll') && current.scrollHeight > current.clientHeight) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return document.scrollingElement || document.body;
+  }
+  
+  /**
+   * Full mouse event simulation for clicking elements
+   * Ported from InstantDataScrapper's function C
+   * Some SPAs (React/Vue) require mousedown + click + mouseup sequence
+   */
+  function simulateFullClick(element) {
+    if (!element) return;
+    
+    const rect = element.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    
+    const eventOpts = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      screenX: x + window.screenX,
+      screenY: y + window.screenY
+    };
+    
+    element.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+    element.dispatchEvent(new MouseEvent('click', eventOpts));
+    element.dispatchEvent(new MouseEvent('mouseup', eventOpts));
+  }
+
+  /**
+   * Extract video URLs from the page
+   */
+  function extractVideoUrls(config) {
+    const urls = new Set();
+    
+    const selectors = config?.videoSelectors || [
+      'video source',
+      'iframe[src*="video"]',
+      '[class*="video"] video',
+      'video[src]'
+    ];
+    
+    for (const sel of selectors) {
+      try {
+        document.querySelectorAll(sel).forEach(el => {
+          const src = el.src || el.getAttribute('src') || el.getAttribute('data-src');
+          if (src && src.startsWith('http')) urls.add(src);
+        });
+      } catch(e) {}
+    }
+    
+    return Array.from(urls);
+  }
+  
+  /**
+   * Extract specifications/attributes table
+   */
+  function extractSpecifications(config) {
+    const specs = [];
+    const seen = new Set();
+    
+    const selectors = config?.specSelectors || [
+      '.product-specs',
+      '[class*="specification"]',
+      '[class*="Specification"]',
+      '.product-property-list'
+    ];
+    
+    // Try site-specific spec selectors first
+    for (const sel of selectors) {
+      try {
+        const container = document.querySelector(sel);
+        if (!container) continue;
+        
+        // Try key-value pairs within the container
+        container.querySelectorAll('li, tr, .do-entry-item, [class*="prop-item"], [class*="attr-item"]').forEach(item => {
+          const nameEl = item.querySelector('[class*="name"], [class*="label"], [class*="key"], th, td:first-child, dt, .prop-name');
+          const valueEl = item.querySelector('[class*="value"], [class*="val"], td:last-child, dd, .prop-value');
+          
+          if (nameEl && valueEl) {
+            const name = nameEl.textContent?.trim();
+            const value = valueEl.textContent?.trim();
+            const key = (name + ':' + value).toLowerCase();
+            if (name && value && name !== value && !seen.has(key)) {
+              seen.add(key);
+              specs.push({ name, value });
+            }
+          }
+        });
+        
+        if (specs.length > 0) break;
+      } catch(e) {}
+    }
+    
+    // Fallback: Look for definition lists
+    if (specs.length === 0) {
+      document.querySelectorAll('dl').forEach(dl => {
+        const dts = dl.querySelectorAll('dt');
+        const dds = dl.querySelectorAll('dd');
+        const count = Math.min(dts.length, dds.length);
+        for (let i = 0; i < count; i++) {
+          const name = dts[i].textContent?.trim();
+          const value = dds[i].textContent?.trim();
+          const key = (name + ':' + value).toLowerCase();
+          if (name && value && !seen.has(key)) {
+            seen.add(key);
+            specs.push({ name, value });
+          }
+        }
+      });
+    }
+    
+    return specs;
+  }
+
+  /**
    * Site-specific product extraction (for single product pages)
+   * Now also checks custom selectors from Pick Selector feature
+   * ENHANCED: Extracts original price, short description, category,
+   * stock, weight, store info, shipping cost, currency, Open Graph tags
+   * NEW: JSON-first extraction strategy + videos + specifications
    */
   function extractProductDetails(callback) {
     const config = getSiteConfig();
@@ -564,7 +1061,42 @@
       extractedAt: Date.now()
     };
     
-    // Try JSON-LD structured data FIRST (most reliable)
+    // Helper to try custom selector first, then fallback
+    const tryCustomOrFallback = (field, fallbackFn) => {
+      const custom = customSelectors[field];
+      if (custom && custom.selector) {
+        try {
+          const el = document.querySelector(custom.selector);
+          if (el) {
+            const value = extractSampleValue(el);
+            if (value) return value;
+          }
+        } catch(e) {}
+      }
+      return fallbackFn ? fallbackFn() : null;
+    };
+    
+    // === EMBEDDED JSON DATA (highest reliability, from cscart-export project) ===
+    const jsonData = extractEmbeddedJSON(config);
+    if (jsonData) {
+      // Merge JSON-extracted data as base layer
+      if (jsonData.title) product.title = jsonData.title;
+      if (jsonData.price) product.price = jsonData.price;
+      if (jsonData.originalPrice) product.originalPrice = jsonData.originalPrice;
+      if (jsonData.currency) product.currency = jsonData.currency;
+      if (jsonData.description) product.description = jsonData.description;
+      if (jsonData.images && jsonData.images.length > 0) product.images = jsonData.images;
+      if (jsonData.sku) product.sku = jsonData.sku;
+      if (jsonData.brand) product.brand = jsonData.brand;
+      if (jsonData.category) product.category = jsonData.category;
+      if (jsonData.stock !== undefined) product.stock = jsonData.stock;
+      if (jsonData.rating) product.rating = jsonData.rating;
+      if (jsonData.reviewCount) product.reviewCount = jsonData.reviewCount;
+      if (jsonData.variants) product.variants = jsonData.variants;
+      if (jsonData.specifications) product.specifications = jsonData.specifications;
+    }
+    
+    // === JSON-LD STRUCTURED DATA ===
     const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
     for (const jsonLd of jsonLdScripts) {
       try {
@@ -574,38 +1106,137 @@
           product.title = prod.name;
           product.description = prod.description;
           product.price = prod.offers?.price || prod.offers?.lowPrice;
+          product.originalPrice = prod.offers?.highPrice || null;
           product.currency = prod.offers?.priceCurrency;
           product.sku = prod.sku;
           product.brand = prod.brand?.name || prod.brand;
+          product.availability = prod.offers?.availability;
           if (prod.image) {
             product.images = Array.isArray(prod.image) ? prod.image : [prod.image];
           }
+          if (prod.aggregateRating) {
+            product.rating = prod.aggregateRating.ratingValue;
+            product.reviewCount = prod.aggregateRating.reviewCount;
+          }
+          if (prod.weight) {
+            product.weight = typeof prod.weight === 'object' ? prod.weight.value : prod.weight;
+          }
           break;
+        }
+        
+        // Extract breadcrumbs from JSON-LD
+        const breadcrumb = data['@type'] === 'BreadcrumbList' ? data : null;
+        if (breadcrumb && breadcrumb.itemListElement) {
+          product.category = breadcrumb.itemListElement
+            .sort((a, b) => (a.position || 0) - (b.position || 0))
+            .map(item => item.name || item.item?.name || '')
+            .filter(n => n)
+            .join(' > ');
         }
       } catch (e) {}
     }
     
-    // Try meta tags for price
-    if (!product.price) {
-      const priceMeta = document.querySelector('meta[property="product:price:amount"], meta[itemprop="price"], meta[name="price"]');
-      if (priceMeta) {
-        product.price = priceMeta.content;
-      }
+    // === OPEN GRAPH & META TAGS (universal fallbacks) ===
+    if (!product.title) {
+      const ogTitle = document.querySelector('meta[property="og:title"]');
+      if (ogTitle) product.title = ogTitle.content;
+    }
+    if (!product.description) {
+      const ogDesc = document.querySelector('meta[property="og:description"]');
+      if (ogDesc) product.description = ogDesc.content;
+    }
+    if (!product.images || product.images.length === 0) {
+      const ogImage = document.querySelector('meta[property="og:image"]');
+      if (ogImage && ogImage.content) product.images = [ogImage.content];
+    }
+    if (!product.shortDescription) {
+      const metaDesc = document.querySelector('meta[name="description"]');
+      if (metaDesc) product.shortDescription = metaDesc.content;
     }
     
-    // Try site-specific selectors
+    // === CUSTOM SELECTORS (user-defined, highest priority) ===
+    const customTitle = tryCustomOrFallback('product_name');
+    const customPrice = tryCustomOrFallback('price');
+    const customOriginalPrice = tryCustomOrFallback('list_price') || tryCustomOrFallback('original_price');
+    const customShipping = tryCustomOrFallback('shipping') || tryCustomOrFallback('shipping_cost');
+    const customDescription = tryCustomOrFallback('description');
+    const customShortDescription = tryCustomOrFallback('short_description');
+    const customBrand = tryCustomOrFallback('brand');
+    const customRating = tryCustomOrFallback('rating');
+    const customReviews = tryCustomOrFallback('review_count');
+    const customCategory = tryCustomOrFallback('category');
+    const customStock = tryCustomOrFallback('quantity');
+    const customWeight = tryCustomOrFallback('weight');
+    const customStoreName = tryCustomOrFallback('store_name');
+    
+    // Apply custom values
+    if (customTitle) product.title = customTitle;
+    if (customPrice) product.price = customPrice;
+    if (customOriginalPrice) product.originalPrice = customOriginalPrice;
+    if (customShipping) product.shipping = customShipping;
+    if (customDescription) product.description = customDescription;
+    if (customShortDescription) product.shortDescription = customShortDescription;
+    if (customBrand) product.brand = customBrand;
+    if (customRating) product.rating = customRating;
+    if (customReviews) product.reviewCount = customReviews;
+    if (customCategory) product.category = customCategory;
+    if (customStock) product.stock = customStock;
+    if (customWeight) product.weight = customWeight;
+    if (customStoreName) product.storeName = customStoreName;
+    
+    // === META TAG PRICE ===
+    if (!product.price) {
+      const priceMeta = document.querySelector('meta[property="product:price:amount"], meta[itemprop="price"], meta[name="price"]');
+      if (priceMeta) product.price = priceMeta.content;
+    }
+    
+    // === SITE-SPECIFIC SELECTORS ===
     if (config) {
       if (!product.title) product.title = trySelectors(config.titleSelectors);
       if (!product.price) product.price = trySelectors(config.priceSelectors);
-      product.shipping = trySelectors(config.shippingSelectors);
+      if (!product.shipping) product.shipping = trySelectors(config.shippingSelectors);
+      
+      // Original/list price from site-specific selectors
+      if (!product.originalPrice && config.originalPriceSelectors) {
+        product.originalPrice = trySelectors(config.originalPriceSelectors);
+      }
+      
+      // Breadcrumbs/category from site-specific selectors
+      if (!product.category && config.breadcrumbSelectors) {
+        const crumbs = trySelectorsAll(config.breadcrumbSelectors);
+        if (crumbs.length > 0) {
+          product.category = crumbs.join(' > ');
+        }
+      }
+      
+      // Store/seller info from site-specific selectors
+      if (!product.storeName && config.storeSelectors) {
+        product.storeName = trySelectors(config.storeSelectors);
+      }
+      if (!product.storeRating && config.storeRatingSelectors) {
+        product.storeRating = trySelectors(config.storeRatingSelectors);
+      }
+      
+      // Stock from site-specific selectors
+      if (!product.stock && config.stockSelectors) {
+        const stockText = trySelectors(config.stockSelectors);
+        if (stockText) {
+          const match = stockText.match(/(\d+)/);
+          product.stock = match ? parseInt(match[1]) : stockText;
+        }
+      }
+      
+      // MOQ for Alibaba
+      if (config.moqSelectors) {
+        product.minOrder = trySelectors(config.moqSelectors);
+      }
     }
     
-    // Fallback title from h1 (but avoid discount/promo text)
+    // === FALLBACK TITLE from h1 ===
     if (!product.title) {
       const h1s = document.querySelectorAll('h1');
       for (const h1 of h1s) {
         const text = h1.textContent?.trim();
-        // Skip if looks like discount text
         if (text && text.length > 10 && !text.match(/^\d+%|off|save|discount/i)) {
           product.title = text;
           break;
@@ -613,38 +1244,182 @@
       }
     }
     
-    // Better price extraction
+    // === BETTER PRICE EXTRACTION ===
     if (!product.price) {
-      const pricePatterns = [
-        /[\$€£¥₦]\s*[\d,]+\.?\d*/g,
-        /[\d,]+\.?\d*\s*[\$€£¥₦]/g,
-        /NGN\s*[\d,]+\.?\d*/gi,
-        /USD\s*[\d,]+\.?\d*/gi
-      ];
       const priceElements = document.querySelectorAll('[class*="price" i]:not([class*="compare"]):not([class*="original"]):not([class*="old"])');
       
-      outer: for (const el of priceElements) {
+      for (const el of priceElements) {
         // Skip if inside a "was price" or "original price" container
         if (el.closest('[class*="original"], [class*="was"], [class*="old"], [class*="compare"]')) continue;
         
-        const text = el.textContent;
-        for (const pattern of pricePatterns) {
-          const matches = text.match(pattern);
-          if (matches) {
-            for (const match of matches) {
-              const num = parseFloat(match.replace(/[^\d.]/g, ''));
-              if (num > 1 && num < 1000000) {
-                product.price = num;
-                product.priceRaw = match;
-                break outer;
-              }
-            }
-          }
+        const parsed = parsePriceText(el.textContent);
+        if (parsed) {
+          product.price = parsed;
+          product.priceRaw = el.textContent.trim();
+          break;
         }
       }
     }
     
-    // Extract ALL images
+    // === ORIGINAL/LIST PRICE ===
+    if (!product.originalPrice) {
+      // Look for strikethrough, "was", "original", "compare" prices
+      const originalPriceSelectors = [
+        '[class*="original" i] [class*="price" i]',
+        '[class*="price" i] del',
+        '[class*="price" i] s',
+        '[class*="compare" i]',
+        '[class*="was" i]',
+        '[class*="old" i] [class*="price" i]',
+        '[class*="Price--original"]',
+        '[class*="list-price"]',
+        '[class*="msrp"]',
+        '[class*="rrp"]'
+      ];
+      for (const sel of originalPriceSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const parsed = parsePriceText(el.textContent);
+            if (parsed && parsed !== product.price) {
+              product.originalPrice = parsed;
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+    
+    // === CURRENCY ===
+    if (!product.currency) {
+      product.currency = detectCurrency();
+    }
+    
+    // === CATEGORY / BREADCRUMBS ===
+    if (!product.category) {
+      const breadcrumbSelectors = [
+        'nav[aria-label*="breadcrumb" i] a',
+        'nav[aria-label*="breadcrumb" i] span',
+        '.breadcrumb a',
+        '.breadcrumb li',
+        '[class*="breadcrumb" i] a',
+        '[class*="breadcrumb" i] li',
+        '[itemtype*="BreadcrumbList"] [itemprop="name"]'
+      ];
+      for (const sel of breadcrumbSelectors) {
+        try {
+          const els = document.querySelectorAll(sel);
+          if (els.length >= 2) {
+            const crumbs = Array.from(els)
+              .map(el => el.textContent?.trim())
+              .filter(t => t && t.length > 1 && !/home|main/i.test(t));
+            if (crumbs.length >= 1) {
+              product.category = crumbs.join(' > ');
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+    
+    // === STOCK / AVAILABILITY ===
+    if (!product.stock && !product.availability) {
+      // Try schema.org availability
+      const availMeta = document.querySelector('[itemprop="availability"]');
+      if (availMeta) {
+        const val = availMeta.content || availMeta.href || availMeta.textContent;
+        product.availability = val;
+        if (/InStock/i.test(val)) product.stock = 999;
+        else if (/OutOfStock/i.test(val)) product.stock = 0;
+      }
+      
+      // Try visible stock elements
+      if (!product.stock) {
+        const stockSelectors = [
+          '[class*="stock" i]',
+          '[class*="inventory" i]',
+          '[class*="availability" i]',
+          '[class*="quantity" i][class*="available" i]'
+        ];
+        for (const sel of stockSelectors) {
+          try {
+            const el = document.querySelector(sel);
+            if (el) {
+              const text = el.textContent?.trim();
+              if (text) {
+                const match = text.match(/(\d+)\s*(?:available|in stock|left|remaining|pieces)/i);
+                if (match) {
+                  product.stock = parseInt(match[1]);
+                  break;
+                }
+                if (/in\s*stock/i.test(text)) { product.stock = 999; break; }
+                if (/out\s*of\s*stock|sold\s*out|unavailable/i.test(text)) { product.stock = 0; break; }
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    
+    // === WEIGHT / DIMENSIONS ===
+    if (!product.weight) {
+      const weightSelectors = [
+        '[class*="weight" i]',
+        '[itemprop="weight"]',
+        'td:has(+ td)',  // Specs tables
+        'th:has(+ td)'
+      ];
+      // Simple approach: look for weight-labeled elements
+      const allText = document.body.innerText;
+      const weightMatch = allText.match(/(?:weight|net\s*weight|package\s*weight)\s*[:=]\s*([\d.]+)\s*(kg|g|lb|oz)/i);
+      if (weightMatch) {
+        let w = parseFloat(weightMatch[1]);
+        const unit = weightMatch[2].toLowerCase();
+        // Convert to kg
+        if (unit === 'g') w = w / 1000;
+        else if (unit === 'lb') w = w * 0.4536;
+        else if (unit === 'oz') w = w * 0.0283;
+        product.weight = Math.round(w * 1000) / 1000;
+        product.weightUnit = 'kg';
+      }
+    }
+    
+    // === STORE / SELLER INFO ===
+    if (!product.storeName) {
+      const genericStoreSelectors = [
+        '[class*="store" i][class*="name" i]',
+        '[class*="seller" i][class*="name" i]',
+        '[class*="shop" i][class*="name" i]',
+        '[class*="vendor" i]',
+        'a[href*="store"]'
+      ];
+      for (const sel of genericStoreSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const text = el.textContent?.trim();
+            if (text && text.length > 1 && text.length < 100) {
+              product.storeName = text;
+              if (el.href) product.storeUrl = el.href;
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+    
+    // === SHIPPING COST AS NUMBER ===
+    if (product.shipping && typeof product.shipping === 'string') {
+      product.shippingText = product.shipping;
+      const shippingParsed = parsePriceText(product.shipping);
+      if (shippingParsed !== null) {
+        product.shippingCost = shippingParsed;
+      } else if (/free/i.test(product.shipping)) {
+        product.shippingCost = 0;
+      }
+    }
+    
+    // === EXTRACT ALL IMAGES ===
     const imageUrls = new Set();
     
     // Strategy 1: Site-specific selectors
@@ -684,21 +1459,140 @@
     
     product.images = Array.from(imageUrls).slice(0, 15);
     
-    // Extract variants with full details
+    // === VARIANTS ===
     product.variantGroups = extractVariantGroups(config);
     product.variants = product.variantGroups.allVariants || [];
     
-    // Extract reviews
+    // === REVIEWS ===
     product.reviews = extractReviewsData(config);
     
-    // Get description
+    // === FULL DESCRIPTION (HTML) ===
     if (!product.description) {
-      const descEl = document.querySelector(
-        '[class*="description"], [class*="Description"], #product-description, .product-description, [class*="detail-desc"]'
-      );
-      if (descEl) {
-        product.description = descEl.innerHTML;
-        product.descriptionText = descEl.textContent?.trim();
+      const descSelectors = config?.descriptionSelectors || [
+        '[class*="description"]', '[class*="Description"]',
+        '#product-description', '.product-description', '[class*="detail-desc"]'
+      ];
+      for (const sel of descSelectors) {
+        try {
+          const descEl = document.querySelector(sel);
+          if (descEl && descEl.textContent?.trim().length > 20) {
+            product.fullDescription = descEl.innerHTML;
+            product.description = descEl.innerHTML;
+            product.descriptionText = descEl.textContent?.trim();
+            break;
+          }
+        } catch(e) {}
+      }
+    }
+    
+    // === SHORT DESCRIPTION ===
+    if (!product.shortDescription && (product.descriptionText || product.description)) {
+      const plainText = (product.descriptionText || product.description)
+        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (plainText.length > 200) {
+        const cut = plainText.substring(0, 200);
+        const lastPeriod = cut.lastIndexOf('.');
+        const lastSpace = cut.lastIndexOf(' ');
+        product.shortDescription = plainText.substring(0, (lastPeriod > 150 ? lastPeriod + 1 : lastSpace)) + '...';
+      } else {
+        product.shortDescription = plainText;
+      }
+    }
+    
+    // === VIDEO URLs ===
+    product.videoUrls = extractVideoUrls(config);
+    
+    // === SPECIFICATIONS ===
+    if (!product.specifications || product.specifications.length === 0) {
+      product.specifications = extractSpecifications(config);
+    }
+    
+    // === BRAND (fallback) ===
+    if (!product.brand) {
+      const brandSelectors = [
+        '[itemprop="brand"]',
+        '[class*="brand" i]',
+        '[class*="manufacturer" i]'
+      ];
+      for (const sel of brandSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const text = el.textContent?.trim();
+            if (text && text.length > 1 && text.length < 80) {
+              product.brand = text;
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+    
+    // === RATING ===
+    if (!product.rating) {
+      const ratingSelectors = [
+        '[class*="rating"] [class*="score"], [class*="Rating"] [class*="Score"]',
+        '[class*="star-rating"] [class*="current"]',
+        '[itemprop="ratingValue"]',
+        '[aria-label*="star"], [aria-label*="rating"]'
+      ];
+      for (const sel of ratingSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const text = el.textContent || el.getAttribute('aria-label') || '';
+            const match = text.match(/(\d+(?:\.\d+)?)/);
+            if (match) {
+              product.rating = parseFloat(match[1]);
+              break;
+            }
+          }
+        } catch(e) {}
+      }
+    }
+    
+    // === REVIEW COUNT ===
+    if (!product.reviewCount) {
+      const reviewCountSelectors = [
+        '[class*="review"] [class*="count"], [class*="Review"] [class*="Count"]',
+        '[class*="rating"] [class*="num"], [class*="Rating"] [class*="Num"]',
+        '[itemprop="reviewCount"]',
+        '[class*="feedback-count"]'
+      ];
+      for (const sel of reviewCountSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const text = el.textContent || '';
+            const match = text.match(/(\d+(?:,\d+)*)/);
+            if (match) {
+              product.reviewCount = parseInt(match[1].replace(/,/g, ''));
+              break;
+            }
+          }
+        } catch(e) {}
+      }
+    }
+    
+    // === SOLD / ORDERS COUNT ===
+    if (!product.soldCount) {
+      const soldSelectors = [
+        '[class*="sold"], [class*="Sold"]',
+        '[class*="orders"], [class*="Orders"]',
+        '[class*="trade"] [class*="count"]'
+      ];
+      for (const sel of soldSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const text = el.textContent || '';
+            const match = text.match(/(\d+(?:,\d+)*)/);
+            if (match) {
+              product.soldCount = parseInt(match[1].replace(/,/g, ''));
+              break;
+            }
+          }
+        } catch(e) {}
       }
     }
     
@@ -710,7 +1604,6 @@
    */
   function cleanImageUrl(src) {
     if (!src) return '';
-    // Remove size suffixes
     return src
       .replace(/_\d+x\d+[^.]*\./g, '.')
       .replace(/\/_[^/]*\.webp/, '.jpg')
@@ -736,7 +1629,6 @@
     const groups = {};
     const allVariants = [];
     
-    // Find variant property groups
     const groupSelectors = [
       '.sku-property',
       '[class*="Sku--property"]',
@@ -753,7 +1645,6 @@
           if (!groups[groupName]) groups[groupName] = [];
           
           group.querySelectorAll('[class*="item"], .sku-property-item, button[class*="sku"], [class*="value"]').forEach(item => {
-            // Skip if it's the title element
             if (item.querySelector('[class*="title"]')) return;
             
             const variant = {
@@ -822,27 +1713,23 @@
    * Extract star rating from element
    */
   function extractRating(element) {
-    // Try star count (filled stars)
     const stars = element.querySelectorAll('[class*="star"][class*="full"], .star-icon.fill, [class*="star-on"], [class*="starFilled"]');
     if (stars.length > 0 && stars.length <= 5) return stars.length;
     
-    // Try percentage width
     const percent = element.querySelector('[style*="width"]');
     if (percent && percent.style.width) {
       const match = percent.style.width.match(/(\d+)/);
       if (match) return Math.round(parseInt(match[1]) / 20);
     }
     
-    // Try aria-label
     const ariaRating = element.querySelector('[aria-label*="star"], [aria-label*="rating"]');
     if (ariaRating) {
       const match = ariaRating.getAttribute('aria-label').match(/(\d+(?:\.\d+)?)/);
       if (match) return parseFloat(match[1]);
     }
     
-    // Try text pattern
     const text = element.textContent;
-    const match = text.match(/(\d+(?:\.\d+)?)\s*(?:star|★|\/\s*5)/i);
+    const match = text.match(/(\d+(?:\.\d+)?)\s*(?:star|\/\s*5)/i);
     if (match) return parseFloat(match[1]);
     
     return null;
@@ -914,18 +1801,14 @@
    * Let user select next button
    */
   function selectNextButton(callback) {
-    // Remove existing listeners
     document.removeEventListener('click', nextButtonClickHandler, true);
     document.removeEventListener('mouseover', highlightHoverHandler, true);
     
-    // Store callback
     window._nextButtonCallback = callback;
     
-    // Add listeners
     document.addEventListener('click', nextButtonClickHandler, true);
     document.addEventListener('mouseover', highlightHoverHandler, true);
     
-    // Add selection mode style
     document.body.classList.add('dropship-selecting-next');
   }
   
@@ -936,17 +1819,14 @@
     const selector = buildSelector(e.target);
     nextButtonSelector = selector;
     
-    // Clean up
     document.removeEventListener('click', nextButtonClickHandler, true);
     document.removeEventListener('mouseover', highlightHoverHandler, true);
     document.body.classList.remove('dropship-selecting-next');
     
-    // Remove hover highlight
     document.querySelectorAll('.dropship-hover-highlight').forEach(el => {
       el.classList.remove('dropship-hover-highlight');
     });
     
-    // Mark as next button
     e.target.classList.add('dropship-next-button');
     
     if (window._nextButtonCallback) {
@@ -962,7 +1842,8 @@
   }
   
   /**
-   * Click the next button
+   * Click the next button using full mouse event simulation
+   * Full mousedown + click + mouseup sequence for SPA compatibility
    */
   function clickNextButton(callback, selector) {
     const sel = selector || nextButtonSelector;
@@ -977,18 +1858,24 @@
       return;
     }
     
-    button.click();
+    // Use full mouse event simulation for React/Vue SPA compatibility
+    simulateFullClick(button);
     callback({ success: true, clicked: sel });
   }
   
   /**
    * Scroll for infinite scroll pages
+   * Uses scrollable parent detection instead of always scrolling document
    */
   function scrollDown(callback) {
-    const scrollTarget = document.scrollingElement || document.body;
+    // Find the detected table to determine scrollable parent
+    const table = detectedTables[currentTableIndex];
+    const scrollTarget = table?.element 
+      ? findScrollableParent(table.element)
+      : (document.scrollingElement || document.body);
     const beforeHeight = scrollTarget.scrollHeight;
     
-    window.scrollTo(0, scrollTarget.scrollHeight);
+    scrollTarget.scrollTop = scrollTarget.scrollHeight;
     
     setTimeout(() => {
       const afterHeight = scrollTarget.scrollHeight;
@@ -1002,16 +1889,20 @@
   
   /**
    * Get page hash for duplicate detection
+   * Uses detected table text instead of body text for precision
    */
   function getPageHash(callback) {
-    const content = document.body.innerText.substring(0, 10000);
-    // Use existing sha256 library
+    // Hash the detected table's text, not the entire page body
+    const table = detectedTables[currentTableIndex];
+    const content = table?.element 
+      ? table.element.innerText.substring(0, 10000)
+      : document.body.innerText.substring(0, 10000);
+    
     if (typeof sha256 !== 'undefined') {
       const hash = sha256.create();
       hash.update(content);
       callback({ hash: hash.hex() });
     } else {
-      // Simple fallback hash
       let hash = 0;
       for (let i = 0; i < content.length; i++) {
         const char = content.charCodeAt(i);
@@ -1026,53 +1917,77 @@
   // SELECTOR PICKER - Let users click to select elements
   // ============================================
   
-  /**
-   * Start selector picker mode
-   */
   function startSelectorPicker(callback, fieldName) {
+    if (selectorPickerActive) {
+      stopSelectorPicker();
+    }
+    
     selectorPickerActive = true;
-    selectorPickerCallback = callback;
+    selectorPickerCallback = null;
     selectorPickerField = fieldName;
     
-    // Add picker styles
     if (!document.getElementById('dropship-picker-styles')) {
       const style = document.createElement('style');
       style.id = 'dropship-picker-styles';
       style.textContent = `
         .dropship-picker-hover {
-          outline: 3px solid #00ff00 !important;
+          outline: 3px dashed #00ff00 !important;
           outline-offset: 2px;
           cursor: crosshair !important;
+          background-color: rgba(0, 255, 0, 0.1) !important;
         }
         .dropship-picker-selected {
           outline: 3px solid #0066ff !important;
           outline-offset: 2px;
+          background-color: rgba(0, 102, 255, 0.1) !important;
         }
         .dropship-picker-overlay {
           position: fixed;
           top: 10px;
           left: 50%;
           transform: translateX(-50%);
-          background: #333;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
           color: #fff;
-          padding: 10px 20px;
-          border-radius: 5px;
-          z-index: 999999;
-          font-family: sans-serif;
+          padding: 12px 24px;
+          border-radius: 8px;
+          z-index: 2147483647;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           font-size: 14px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+          pointer-events: none;
+        }
+        .dropship-picker-info {
+          position: fixed;
+          bottom: 10px;
+          left: 50%;
+          transform: translateX(-50%);
+          background: rgba(0,0,0,0.85);
+          color: #fff;
+          padding: 8px 16px;
+          border-radius: 6px;
+          z-index: 2147483647;
+          font-family: monospace;
+          font-size: 11px;
+          max-width: 80%;
+          word-break: break-all;
+          pointer-events: none;
         }
       `;
       document.head.appendChild(style);
     }
     
-    // Add overlay instructions
     const overlay = document.createElement('div');
     overlay.id = 'dropship-picker-overlay';
     overlay.className = 'dropship-picker-overlay';
-    overlay.innerHTML = `Click on the element to select for <strong>${fieldName}</strong>. Press ESC to cancel.`;
+    overlay.textContent = 'Click element for "' + fieldName + '" | Press ESC to cancel';
     document.body.appendChild(overlay);
     
-    // Add event listeners
+    const info = document.createElement('div');
+    info.id = 'dropship-picker-info';
+    info.className = 'dropship-picker-info';
+    info.textContent = 'Hover over elements to see selector...';
+    document.body.appendChild(info);
+    
     document.addEventListener('mouseover', pickerHoverHandler, true);
     document.addEventListener('mouseout', pickerUnhoverHandler, true);
     document.addEventListener('click', pickerClickHandler, true);
@@ -1084,6 +1999,14 @@
   function pickerHoverHandler(e) {
     if (!selectorPickerActive) return;
     e.target.classList.add('dropship-picker-hover');
+    
+    const info = document.getElementById('dropship-picker-info');
+    if (info) {
+      const selector = buildUniqueSelector(e.target);
+      const value = extractSampleValue(e.target);
+      info.textContent = 'Selector: ' + selector.substring(0, 80) + (selector.length > 80 ? '...' : '') +
+        ' | Value: ' + (value || '').substring(0, 60) + ((value || '').length > 60 ? '...' : '');
+    }
   }
   
   function pickerUnhoverHandler(e) {
@@ -1101,36 +2024,44 @@
     const selector = buildUniqueSelector(element);
     const sampleValue = extractSampleValue(element);
     
-    // Mark as selected
     element.classList.remove('dropship-picker-hover');
     element.classList.add('dropship-picker-selected');
     
-    // Store the selector
     customSelectors[selectorPickerField] = {
       selector: selector,
       sampleValue: sampleValue,
       savedAt: Date.now()
     };
     
-    // Clean up
+    const fieldName = selectorPickerField;
     stopSelectorPicker();
     
-    // Callback with result
-    if (selectorPickerCallback) {
-      selectorPickerCallback({
+    try {
+      chrome.runtime.sendMessage({
+        action: 'selectorPickerResult',
         success: true,
-        field: selectorPickerField,
+        field: fieldName,
         selector: selector,
-        sampleValue: sampleValue
+        sampleValue: sampleValue,
+        domain: window.location.hostname
       });
+    } catch (e) {
+      console.log('[DropshipTracker] Could not send picker result:', e);
     }
   }
   
   function pickerEscHandler(e) {
     if (e.key === 'Escape' && selectorPickerActive) {
+      const field = selectorPickerField;
       stopSelectorPicker();
-      if (selectorPickerCallback) {
-        selectorPickerCallback({ cancelled: true });
+      try {
+        chrome.runtime.sendMessage({
+          action: 'selectorPickerResult',
+          cancelled: true,
+          field: field
+        });
+      } catch (err) {
+        console.log('[DropshipTracker] Could not send cancel:', err);
       }
     }
   }
@@ -1138,17 +2069,16 @@
   function stopSelectorPicker() {
     selectorPickerActive = false;
     
-    // Remove listeners
     document.removeEventListener('mouseover', pickerHoverHandler, true);
     document.removeEventListener('mouseout', pickerUnhoverHandler, true);
     document.removeEventListener('click', pickerClickHandler, true);
     document.removeEventListener('keydown', pickerEscHandler, true);
     
-    // Remove overlay
     const overlay = document.getElementById('dropship-picker-overlay');
     if (overlay) overlay.remove();
+    const info = document.getElementById('dropship-picker-info');
+    if (info) info.remove();
     
-    // Remove hover highlights
     document.querySelectorAll('.dropship-picker-hover').forEach(el => {
       el.classList.remove('dropship-picker-hover');
     });
@@ -1160,25 +2090,23 @@
   function buildUniqueSelector(element) {
     const parts = [];
     let current = element;
+    let maxIterations = 50;
     
-    while (current && current !== document.body && current !== document.documentElement) {
+    while (current && current !== document.body && current !== document.documentElement && maxIterations-- > 0) {
       let selector = current.tagName.toLowerCase();
       
-      // Use ID if unique
       if (current.id && document.querySelectorAll('#' + CSS.escape(current.id)).length === 1) {
         selector = '#' + CSS.escape(current.id);
         parts.unshift(selector);
         break;
       }
       
-      // Use data attributes if available (often stable)
       const stableAttrs = ['data-product-id', 'data-item-id', 'data-sku', 'data-testid', 'role'];
       for (const attr of stableAttrs) {
         const val = current.getAttribute(attr);
         if (val && !val.includes(' ')) {
           selector += `[${attr}="${CSS.escape(val)}"]`;
           parts.unshift(selector);
-          // Check if unique
           if (document.querySelectorAll(parts.join(' > ')).length === 1) {
             return parts.join(' > ');
           }
@@ -1186,7 +2114,6 @@
         }
       }
       
-      // Use classes (filter dynamic ones)
       if (current.className && typeof current.className === 'string') {
         const classes = current.className.trim().split(/\s+/)
           .filter(c => c && !/^\d|--|__|index-\d/.test(c))
@@ -1196,7 +2123,6 @@
         }
       }
       
-      // Add nth-child if needed for uniqueness
       const parent = current.parentElement;
       if (parent) {
         const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
@@ -1217,7 +2143,6 @@
    * Extract sample value from element
    */
   function extractSampleValue(element) {
-    // Try to get the most meaningful value
     if (element.tagName === 'IMG') {
       return element.src || element.getAttribute('data-src') || '';
     }
@@ -1227,41 +2152,25 @@
     if (element.tagName === 'INPUT' || element.tagName === 'SELECT') {
       return element.value || '';
     }
-    
-    // For other elements, get text content
     return element.textContent?.trim().substring(0, 200) || '';
   }
   
-  /**
-   * Get custom selectors for a field
-   */
   function getCustomSelector(field) {
     return customSelectors[field] || null;
   }
   
-  /**
-   * Extract data using custom selector
-   */
   function extractWithCustomSelector(selector) {
     const element = document.querySelector(selector);
     if (!element) return null;
-    
     return extractSampleValue(element);
   }
   
-  /**
-   * Extract data from ALL matching elements (for multiple images, reviews, etc.)
-   */
   function extractAllWithSelector(selector) {
     const elements = document.querySelectorAll(selector);
     if (elements.length === 0) return [];
-    
     return Array.from(elements).map(el => extractSampleValue(el)).filter(v => v);
   }
   
-  /**
-   * Load custom selectors from storage
-   */
   function loadCustomSelectors(callback) {
     const domain = window.location.hostname;
     const key = `customSelectors_${domain}`;
@@ -1276,9 +2185,6 @@
     }
   }
   
-  /**
-   * Save custom selectors to storage
-   */
   function saveCustomSelectors(callback) {
     const domain = window.location.hostname;
     const key = `customSelectors_${domain}`;
@@ -1290,9 +2196,6 @@
     }
   }
   
-  /**
-   * Get all custom selectors
-   */
   function getAllCustomSelectors(callback) {
     callback(customSelectors);
   }
@@ -1303,6 +2206,10 @@
   // Message listener
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {
+      case 'ping':
+        sendResponse({ pong: true });
+        return false;
+        
       case 'findTables':
         findTables(sendResponse);
         return true;
@@ -1335,7 +2242,6 @@
         getPageHash(sendResponse);
         return true;
         
-      // New selector picker actions
       case 'startSelectorPicker':
         startSelectorPicker(sendResponse, request.field);
         return true;

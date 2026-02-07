@@ -84,10 +84,13 @@ const GoogleDriveService = (function() {
     });
     
     if (response.status === 401) {
-      // Token expired, try to refresh
+      // Token expired, try to refresh (max 1 retry to prevent infinite loop)
+      if (options._retried) {
+        throw new Error('Authentication failed after retry. Please re-authorize Google Drive.');
+      }
       accessToken = null;
       await authorize();
-      return apiRequest(url, options);
+      return apiRequest(url, { ...options, _retried: true });
     }
     
     if (!response.ok) {
