@@ -516,6 +516,32 @@
         rowData._rowIndex = index;
         rowData._supplierProductId = extractProductIdFromElement(row);
         rowData._supplierSku = extractSupplierSku(row);
+        
+        // === CUSTOM SELECTORS: Append data from user-picked selectors ===
+        // Try each custom selector relative to this row element first, then page-wide
+        if (customSelectors && Object.keys(customSelectors).length > 0) {
+          for (const [fieldId, config] of Object.entries(customSelectors)) {
+            if (!config || !config.selector) continue;
+            try {
+              // First try within the row element (for table/list pages with repeating items)
+              let el = row.querySelector(config.selector);
+              if (!el) {
+                // Try a relative match: if the selector targets a class, look for it inside the row
+                const simpleClass = config.selector.match(/\.([a-zA-Z0-9_-]+)/);
+                if (simpleClass) {
+                  el = row.querySelector('.' + simpleClass[1]);
+                }
+              }
+              if (el) {
+                const value = extractSampleValue(el);
+                if (value) {
+                  rowData['_custom_' + fieldId] = value;
+                }
+              }
+            } catch(e) { /* selector syntax error — skip */ }
+          }
+        }
+        
         rows.push(rowData);
       });
       
@@ -1342,6 +1368,16 @@
     if (!product.shortDescription) {
       const metaDesc = document.querySelector('meta[name="description"]');
       if (metaDesc) product.shortDescription = metaDesc.content;
+    }
+    
+    // === META KEYWORDS & META DESCRIPTION ===
+    if (!product.metaKeywords) {
+      const metaKw = document.querySelector('meta[name="keywords"]');
+      if (metaKw && metaKw.content) product.metaKeywords = metaKw.content;
+    }
+    if (!product.metaDescription) {
+      const metaD = document.querySelector('meta[name="description"]');
+      if (metaD && metaD.content) product.metaDescription = metaD.content;
     }
     
     // === CUSTOM SELECTORS (user-defined, highest priority) ===

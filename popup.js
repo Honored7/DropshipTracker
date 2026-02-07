@@ -573,6 +573,13 @@
       } else {
         $('#exportXmlBtn').attr('title', '');
       }
+      
+      // Update the mapping section header to reflect the selected template
+      const templateNames = { cscart: 'CS-Cart', shopify: 'Shopify', woocommerce: 'WooCommerce', prestashop: 'PrestaShop', magento: 'Magento', bigcommerce: 'BigCommerce' };
+      const templateLabel = templateNames[templateId] || 'Export';
+      $('#fieldMappingSection h4').contents().first().replaceWith(
+        '<span class="glyphicon glyphicon-transfer"></span> Map Fields for ' + templateLabel + ' '
+      );
     });
 
     // Field mapping
@@ -677,9 +684,9 @@
    * Start the selector picker to let user click on page elements
    */
   function startPickSelector() {
-    // Show a modal to select which field to pick
-    const fieldOptions = CSCART_FIELDS
-      .filter(f => f.id && !f.required) // Don't include required fields or ignore
+    // Show a modal to select which field to pick — include ALL fields
+    const fieldOptions = EXPORT_FIELDS
+      .filter(f => f.id) // Include all fields (required too — user may need to pick title/price)
       .map(f => `<option value="${f.id}">${f.label}</option>`)
       .join('');
     
@@ -816,20 +823,25 @@
           'URL': sanitized.url || '',
           'Domain': sanitized.domain || '',
           'Variants': JSON.stringify(sanitized.variants || []),
+          'Variant Groups': JSON.stringify(sanitized.variantGroups || []),
           'Reviews': (sanitized.reviews || []).length + ' reviews',
           'Rating': sanitized.rating || '',
           'Review Count': sanitized.reviewCount || '',
-          'Sold': sanitized.soldCount || '',
+          'Sold': sanitized.soldCount || sanitized.orders || '',
           'Brand': sanitized.brand || '',
           'SKU': sanitized.sku || '',
           'Stock': sanitized.stock || '',
+          'Availability': sanitized.availability || '',
           'Weight': sanitized.weight || '',
           'Shipping': sanitized.shippingText || sanitized.shipping || '',
           'Shipping Cost': sanitized.shippingCost || '',
           'Store': sanitized.storeName || '',
           'Store Rating': sanitized.storeRating || '',
+          'Min Order': sanitized.minOrder || '',
           'Video URLs': (sanitized.videoUrls || []).join('|||'),
-          'Specifications': JSON.stringify(sanitized.specifications || [])
+          'Specifications': JSON.stringify(sanitized.specifications || []),
+          'Meta Keywords': sanitized.metaKeywords || '',
+          'Meta Description': sanitized.metaDescription || sanitized.shortDescription || ''
         };
         
         // Check if product already exists in scraped data (by ID or URL)
@@ -959,10 +971,18 @@
   /**
    * Scrape full details for a single catalog product
    * Opens product URL in new tab, extracts data, updates catalog
+   * @param {number} rowIndex - catalog row index
+   * @param {Function} [onComplete] - optional callback when scraping finishes (success or fail)
    */
-  function scrapeProductDetails(rowIndex) {
+  function scrapeProductDetails(rowIndex, onComplete) {
+    const done = (msg) => {
+      if (msg) console.log('[DropshipTracker]', msg);
+      if (typeof onComplete === 'function') onComplete();
+    };
+
     if (rowIndex < 0 || rowIndex >= state.catalog.length) {
       showToast('Invalid product row', 'error');
+      done('Invalid rowIndex');
       return;
     }
     
@@ -971,38 +991,93 @@
     
     if (!productUrl) {
       showToast('Product has no URL to scrape. Map a URL field when scraping.', 'warning');
+      done('No URL');
+      return;
+    }
+    
+    // Validate URL format before opening
+    try {
+      const urlObj = new URL(productUrl);
+      if (!['http:', 'https:'].includes(urlObj.protocol)) {
+        showToast('Invalid product URL: ' + productUrl.substring(0, 50), 'warning');
+        done('Invalid protocol');
+        return;
+      }
+    } catch(e) {
+      showToast('Malformed product URL: ' + productUrl.substring(0, 50), 'warning');
+      done('Malformed URL');
       return;
     }
     
     setStatus(`Opening product page for scraping: ${product.title?.substring(0, 40)}...`);
-    showToast('Opening product page to scrape details...', 'info');
+    
+    // Error page detection patterns
+    const ERROR_PAGE_PATTERNS = /^(HTTP\s*Status\s*\d|4\d{2}\s|5\d{2}\s|Access\s*Denied|Forbidden|Not\s*Found|Bad\s*Request|Service\s*Unavailable|Error|Page\s*Not\s*Found|Server\s*Error|Unauthorized)/i;
     
     // Open the product URL in a new tab and scrape
     chrome.tabs.create({ url: productUrl, active: false }, (tab) => {
+      if (chrome.runtime.lastError || !tab) {
+        showToast('Failed to open product page', 'error');
+        done('Tab create failed');
+        return;
+      }
+      
       const tabId = tab.id;
+      let completed = false;
+      
+      const finish = (tabIdToClose) => {
+        if (completed) return;
+        completed = true;
+        try { chrome.tabs.remove(tabIdToClose); } catch(e) {}
+        done('Completed');
+      };
       
       // Wait for page to load, then extract
       const checkInterval = setInterval(() => {
+        if (completed) { clearInterval(checkInterval); return; }
+        
         chrome.tabs.get(tabId, (tabInfo) => {
           if (chrome.runtime.lastError || !tabInfo) {
             clearInterval(checkInterval);
+            finish(tabId);
             return;
           }
           
           if (tabInfo.status === 'complete') {
             clearInterval(checkInterval);
             
+            // Check tab title for error page indicators
+            if (tabInfo.title && ERROR_PAGE_PATTERNS.test(tabInfo.title.trim())) {
+              showToast(`⚠ Error page for: ${product.title?.substring(0, 30)}... (${tabInfo.title.substring(0, 40)})`, 'warning');
+              setStatus('Product page returned an error');
+              finish(tabId);
+              return;
+            }
+            
             // Give the page a moment to fully render dynamic content
             setTimeout(() => {
+              if (completed) return;
+              
               chrome.tabs.sendMessage(tabId, { action: 'extractProduct' }, (response) => {
                 if (chrome.runtime.lastError) {
-                  showToast('Could not extract from page - content script not loaded', 'error');
-                  chrome.tabs.remove(tabId);
+                  // Content script not loaded — try injecting
+                  showToast('Content script not loaded on product page. Try refreshing.', 'warning');
+                  finish(tabId);
                   return;
                 }
                 
-                if (response && (response.productId || response.title)) {
-                  // Update catalog with enriched data
+                // Validate the response is real product data, not error page noise
+                const title = response?.title || '';
+                const isErrorPage = ERROR_PAGE_PATTERNS.test(title.trim());
+                
+                if (isErrorPage) {
+                  showToast(`⚠ Error page detected for: ${product.title?.substring(0, 30)}...`, 'warning');
+                  setStatus('Error page — product not updated');
+                  finish(tabId);
+                  return;
+                }
+                
+                if (response && (response.productId || (response.title && response.title.length > 5))) {
                   // Sanitize scraped data
                   const sanitized = typeof SanitizeService !== 'undefined'
                     ? SanitizeService.sanitizeProduct(response)
@@ -1024,9 +1099,17 @@
                     shipping: sanitized.shipping || product.shipping,
                     brand: sanitized.brand || product.brand,
                     sku: sanitized.sku || product.sku,
+                    category: sanitized.category || product.category,
+                    stock: sanitized.stock !== undefined ? sanitized.stock : product.stock,
+                    weight: sanitized.weight || product.weight,
+                    metaKeywords: sanitized.metaKeywords || product.metaKeywords,
+                    metaDescription: sanitized.metaDescription || product.metaDescription,
                     supplierPrice: sanitized.price ? parsePrice(sanitized.price) : product.supplierPrice,
+                    originalPrice: sanitized.originalPrice || product.originalPrice,
+                    currency: sanitized.currency || product.currency,
                     videoUrls: sanitized.videoUrls || product.videoUrls || [],
                     specifications: sanitized.specifications || product.specifications || [],
+                    storeName: sanitized.storeName || product.storeName,
                     lastChecked: Date.now(),
                     lastEnriched: Date.now()
                   };
@@ -1037,33 +1120,33 @@
                     updates: updates
                   }, (resp) => {
                     if (resp?.success) {
-                      // Update local state
                       Object.assign(state.catalog[rowIndex], updates);
                       refreshCatalogTable();
-                      showToast(`✓ Scraped details for: ${product.title?.substring(0, 30)}...`, 'success');
+                      showToast(`✓ Scraped details for: ${sanitized.title?.substring(0, 30) || product.title?.substring(0, 30)}...`, 'success');
                       setStatus('Product details updated');
+                    } else {
+                      showToast('Failed to save scraped details', 'warning');
                     }
-                    // Close the tab
-                    chrome.tabs.remove(tabId);
+                    finish(tabId);
                   });
                 } else {
                   showToast('Could not extract product data from page', 'warning');
-                  chrome.tabs.remove(tabId);
+                  finish(tabId);
                 }
               });
-            }, 2000); // Wait 2 seconds for dynamic content
+            }, 3000); // Wait 3 seconds for dynamic content (SPA hydration)
           }
         });
       }, 500); // Check tab status every 500ms
       
-      // Timeout after 30 seconds — close orphan tab and report error
+      // Hard timeout after 30 seconds
       setTimeout(() => {
-        clearInterval(checkInterval);
-        try { chrome.tabs.remove(tabId); } catch(e) {}
-        showToast('Product scraping timed out after 30s', 'warning');
-        setStatus('Scraping timed out');
-        // Invoke onComplete callback for queue-based scraping
-        if (typeof onComplete === 'function') onComplete();
+        if (!completed) {
+          clearInterval(checkInterval);
+          showToast('Product scraping timed out after 30s', 'warning');
+          setStatus('Scraping timed out');
+          finish(tabId);
+        }
       }, 30000);
     });
   }
@@ -1086,7 +1169,7 @@
       }
     }
     
-    showToast(`Scraping ${selected.length} products with 5-second delay...`, 'info');
+    showToast(`Scraping ${selected.length} products sequentially...`, 'info');
     setStatus(`Scraping 0/${selected.length} products...`);
     
     let currentIndex = 0;
@@ -1102,12 +1185,11 @@
       setStatus(`Scraping ${currentIndex + 1}/${selected.length}: ${state.catalog[rowIndex]?.title?.substring(0, 30)}...`);
       currentIndex++;
       
-      // Wait 5 seconds then scrape next — scrapeProductDetails gets onComplete callback
-      setTimeout(() => {
-        scrapeNext();
-      }, 5000);
-      
-      scrapeProductDetails(rowIndex);
+      // Use onComplete callback to sequence scrapers properly (no race condition)
+      scrapeProductDetails(rowIndex, () => {
+        // Wait 3 seconds between products to avoid rate limiting
+        setTimeout(scrapeNext, 3000);
+      });
     }
     
     scrapeNext();
@@ -1211,6 +1293,7 @@
     // === SMART COLUMN NAMING (ported from IDS) ===
     // Build a global name map using the IDS algorithm (most specific CSS class per path)
     const smartNames = buildSmartColumnNames(state.fieldNames);
+    state.smartNames = smartNames; // Store for field mapping UI consistency
     
     // Convert to array format for display using smart names
     const displayData = rawData.map(row => {
@@ -1721,7 +1804,7 @@
       { key: 'description', label: 'Description', format: v => v ? `${String(v).length} chars` : 'none' },
       { key: 'category', label: 'Category' },
       { key: 'brand', label: 'Brand' },
-      { key: 'sku', label: 'SKU / Product ID' },
+      { key: 'sku', label: 'SKU (Supplier Code)' },
       { key: 'stock', label: 'Stock' },
       { key: 'weight', label: 'Weight' },
       { key: 'shipping', label: 'Shipping' },
@@ -1789,64 +1872,69 @@
   // FIELD MAPPING
   // ============================================
   
-  const CSCART_FIELDS = [
+  const EXPORT_FIELDS = [
     { id: '', label: '-- Ignore --' },
-    { id: 'product_code', label: 'Product Code * (Your Code)', required: true },
-    { id: 'supplier_product_id', label: 'Supplier Product ID (AliExpress/Alibaba ID)' },
-    { id: 'supplier_sku', label: 'Supplier SKU' },
+    { id: 'product_code', label: 'Product ID * (Supplier Item #)', required: true },
+    { id: 'supplier_sku', label: 'SKU (Optional Supplier Code)' },
     { id: 'product_name', label: 'Product Name *', required: true },
     { id: 'price', label: 'Price *', required: true },
-    { id: 'list_price', label: 'List Price (MSRP/Original)' },
-    { id: 'quantity', label: 'Quantity/Stock' },
+    { id: 'list_price', label: 'Original / List Price' },
+    { id: 'quantity', label: 'Quantity / Stock' },
     { id: 'category', label: 'Category' },
     { id: 'description', label: 'Full Description' },
     { id: 'short_description', label: 'Short Description' },
     { id: 'images', label: 'Images (Primary)' },
     { id: 'additional_images', label: 'Additional Images' },
     { id: 'weight', label: 'Weight' },
-    { id: 'brand', label: 'Brand/Manufacturer' },
+    { id: 'brand', label: 'Brand / Manufacturer' },
     { id: 'url', label: 'Supplier URL' },
     { id: 'shipping', label: 'Shipping Info' },
     { id: 'shipping_cost', label: 'Shipping Cost' },
-    { id: 'variants', label: 'Variants/Options' },
+    { id: 'variants', label: 'Variants / Options' },
     { id: 'color', label: 'Color Option' },
     { id: 'size', label: 'Size Option' },
     { id: 'reviews', label: 'Reviews Text' },
     { id: 'rating', label: 'Rating (Stars)' },
     { id: 'review_count', label: 'Review Count' },
-    { id: 'sold_count', label: 'Units Sold' },
+    { id: 'sold_count', label: 'Units Sold / Orders' },
     { id: 'meta_keywords', label: 'Meta Keywords' },
     { id: 'meta_description', label: 'Meta Description' },
     { id: 'attributes', label: 'Product Attributes' },
     { id: 'specifications', label: 'Specifications' },
     { id: 'min_order', label: 'Minimum Order' },
-    { id: 'store_name', label: 'Store/Seller Name' },
+    { id: 'store_name', label: 'Store / Seller Name' },
     { id: 'store_rating', label: 'Store Rating' },
     { id: 'video_urls', label: 'Video URLs' },
-    { id: 'full_description', label: 'Full Description (HTML)' }
+    { id: 'full_description', label: 'Full Description (HTML)' },
+    { id: 'currency', label: 'Currency' },
+    { id: 'availability', label: 'Availability' }
   ];
+  // Keep backward compat alias
+  const CSCART_FIELDS = EXPORT_FIELDS;
 
   function showFieldMapping() {
     if (state.fieldNames.length === 0) return;
     
     const $grid = $('#fieldMappingGrid').empty();
+    const smartNames = state.smartNames || {};
     
     state.fieldNames.forEach((field, index) => {
-      const shortName = getShortFieldName(field);
+      // Use the same smart name that appears as the table column header
+      const displayName = smartNames[field] || getShortFieldName(field);
       
-      // Use persisted mapping if available, otherwise auto-detect
+      // Use persisted mapping if available, otherwise auto-detect using display name
       let mappedValue = state.fieldMapping[field];
       if (!mappedValue) {
-        mappedValue = autoDetectMapping(shortName);
+        mappedValue = autoDetectMapping(displayName);
         state.fieldMapping[field] = mappedValue;
       }
       
       const $row = $(`
         <div class="mapping-row">
-          <span class="source-field" title="${field}">${shortName}</span>
+          <span class="source-field" title="${field}">${displayName}</span>
           <span class="arrow">→</span>
           <select class="form-control input-sm" data-field="${field}">
-            ${CSCART_FIELDS.map(f => 
+            ${EXPORT_FIELDS.map(f => 
               `<option value="${f.id}" ${f.id === mappedValue ? 'selected' : ''}>${f.label}</option>`
             ).join('')}
           </select>
@@ -1862,6 +1950,14 @@
       
       $grid.append($row);
     });
+    
+    // Update the header to reflect the selected cart template
+    const selectedTemplate = $('#cartTemplateSelect').val() || 'export';
+    const templateNames = { cscart: 'CS-Cart', shopify: 'Shopify', woocommerce: 'WooCommerce', prestashop: 'PrestaShop', magento: 'Magento', bigcommerce: 'BigCommerce' };
+    const templateLabel = templateNames[selectedTemplate] || 'Export';
+    $('#fieldMappingSection h4').contents().first().replaceWith(
+      '<span class="glyphicon glyphicon-transfer"></span> Map Fields for ' + templateLabel + ' '
+    );
     
     $('#fieldMappingSection').slideDown();
     
@@ -1883,10 +1979,10 @@
     if (lower.includes('title') || (lower.includes('name') && lower.includes('product'))) return 'product_name';
     if (lower === 'name' || lower === 'title') return 'product_name';
     
-    // IDs and codes
-    if (lower.includes('sku') && lower.includes('id')) return 'supplier_sku';
-    if (lower.includes('item') && lower.includes('id')) return 'supplier_product_id';
-    if (lower.includes('product') && lower.includes('id')) return 'supplier_product_id';
+    // IDs and codes — Product ID = supplier item number (primary identifier)
+    if (lower === 'product id' || lower === 'product_id') return 'product_code';
+    if (lower.includes('item') && lower.includes('id')) return 'product_code';
+    if (lower.includes('product') && lower.includes('id')) return 'product_code';
     if (lower.includes('sku')) return 'supplier_sku';
     if (lower.includes('code') || lower.includes('_id')) return 'product_code';
     
@@ -2464,26 +2560,25 @@
     const products = state.data.map((row, index) => {
       const rawRow = state.rawData[index] || {};
       
-      // Find mapped values
-      const getMappedValue = (cscartField) => {
+      // Find mapped values — use smart names (matching table column headers)
+      const getMappedValue = (exportField) => {
+        const smartNames = state.smartNames || {};
         for (const [sourceField, mappedTo] of Object.entries(state.fieldMapping)) {
-          if (mappedTo === cscartField) {
-            const shortName = getShortFieldName(sourceField);
-            return row[shortName] || rawRow[sourceField] || '';
+          if (mappedTo === exportField) {
+            const displayName = smartNames[sourceField] || getShortFieldName(sourceField);
+            return row[displayName] || rawRow[sourceField] || '';
           }
         }
         return '';
       };
       
-      // Product Code: Use your code first, fallback to supplier ID
-      const yourProductCode = getMappedValue('product_code');
-      const supplierProductId = getMappedValue('supplier_product_id') || rawRow._supplierProductId || rawRow._productId || '';
+      // Product ID: supplier's item number (e.g., AliExpress item #) = primary identifier
+      const supplierProductId = getMappedValue('product_code') || rawRow._supplierProductId || '';
       const supplierSku = getMappedValue('supplier_sku') || rawRow._supplierSku || '';
       
-      const productCode = yourProductCode || 
-                          supplierProductId || 
+      const productCode = supplierProductId || 
                           rawRow['Product ID'] ||
-                          `SKU-${Date.now()}-${index}`;
+                          `PROD-${Date.now()}-${index}`;
       
       const priceStr = getMappedValue('price') || rawRow.Price || '';
       const price = parsePrice(priceStr);
@@ -2700,12 +2795,13 @@
   function mapToCSCart(data, rawData) {
     return data.map((row, index) => {
       const raw = rawData[index] || {};
+      const smartNames = state.smartNames || {};
       
-      const getMappedValue = (cscartField) => {
+      const getMappedValue = (exportField) => {
         for (const [sourceField, mappedTo] of Object.entries(state.fieldMapping)) {
-          if (mappedTo === cscartField) {
-            const shortName = getShortFieldName(sourceField);
-            return row[shortName] || raw[sourceField] || '';
+          if (mappedTo === exportField) {
+            const displayName = smartNames[sourceField] || getShortFieldName(sourceField);
+            return row[displayName] || raw[sourceField] || '';
           }
         }
         return '';
@@ -2725,7 +2821,7 @@
       const productName = getMappedValue('product_name') || raw.Title || 'Untitled';
       
       return {
-        product_code: getMappedValue('product_code') || raw._productId || `SKU-${Date.now()}-${index}`,
+        product_code: getMappedValue('product_code') || raw._supplierProductId || `PROD-${Date.now()}-${index}`,
         product_name: productName,
         price: calculateSellingPrice(parseFloat(supplierPrice), parseFloat(shippingCostValue)),
         list_price: CSCartMapper.parsePrice(getMappedValue('list_price') || raw['Original Price'] || ''),
