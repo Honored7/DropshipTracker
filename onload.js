@@ -1959,27 +1959,65 @@
   }
   
   /**
-   * Scroll for infinite scroll pages
-   * Uses scrollable parent detection instead of always scrolling document
+   * Incremental scroll for infinite scroll pages
+   * Ported from IDS: scrolls 1000px at a time, monitors child count + scroll position
+   * Stops when no new children load and scroll position doesn't change
    */
   function scrollDown(callback) {
-    // Find the detected table to determine scrollable parent
     const table = detectedTables[currentTableIndex];
-    const scrollTarget = table?.element 
-      ? findScrollableParent(table.element)
+    const tableElement = table?.element;
+    const scrollTarget = tableElement
+      ? findScrollableParent(tableElement)
       : (document.scrollingElement || document.body);
-    const beforeHeight = scrollTarget.scrollHeight;
-    
-    scrollTarget.scrollTop = scrollTarget.scrollHeight;
-    
-    setTimeout(() => {
-      const afterHeight = scrollTarget.scrollHeight;
-      callback({
-        scrolled: true,
-        heightChanged: afterHeight > beforeHeight,
-        newHeight: afterHeight
-      });
-    }, 1000);
+
+    // Count children of the detected table container (like IDS)
+    const countChildren = () => {
+      if (tableElement) return tableElement.children.length;
+      return 0;
+    };
+
+    let prevChildCount = countChildren();
+    let prevScrollTop = scrollTarget.scrollTop;
+    let iterations = 0;
+    const maxIterations = 30; // Safety limit
+
+    function scrollStep() {
+      iterations++;
+      if (iterations > maxIterations) {
+        callback({ scrolled: true, heightChanged: false, reason: 'max_iterations' });
+        return;
+      }
+
+      // Scroll down by 1000px (incremental, like IDS)
+      scrollTarget.scrollTop += 1000;
+
+      setTimeout(() => {
+        const currChildCount = countChildren();
+        const currScrollTop = scrollTarget.scrollTop;
+
+        const childrenChanged = currChildCount !== prevChildCount;
+        const scrollStuck = currScrollTop === prevScrollTop;
+
+        if (childrenChanged) {
+          // New children loaded — infinite scroll content appeared
+          callback({ scrolled: true, heightChanged: true, newChildren: currChildCount });
+          return;
+        }
+
+        if (scrollStuck) {
+          // Can't scroll further — reached bottom
+          callback({ scrolled: true, heightChanged: false, reason: 'bottom_reached' });
+          return;
+        }
+
+        // Still scrolling but no new children yet — keep going
+        prevChildCount = currChildCount;
+        prevScrollTop = currScrollTop;
+        scrollStep();
+      }, 1000);
+    }
+
+    scrollStep();
   }
   
   /**

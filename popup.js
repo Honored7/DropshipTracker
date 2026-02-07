@@ -1504,43 +1504,151 @@
     crawlNextPage();
   }
 
+  /**
+   * Network-aware page load detection (ported from IDS).
+   * Uses chrome.webRequest to track pending network requests on the target tab.
+   * Fires callback only when network is idle (all requests resolved) or timeout hit.
+   * @param {Function} actionFn - Action to perform (click next, scroll). Receives a done() callback.
+   * @param {Function} callback - Called when page has loaded (network idle).
+   */
+  function waitForNetworkIdle(actionFn, callback) {
+    const tabId = state.tabId;
+    const crawlDelay = state.settings?.crawlDelay || 2000;
+    const maxWait = state.settings?.maxWait || 5000;
+    const minIdleGap = 100; // ms of network silence to consider idle
+
+    const pendingRequests = {};
+    let lastRequestTime = null;
+    let settled = false;
+    let idleCheckEnabled = false;
+
+    const filter = {
+      urls: ['<all_urls>'],
+      tabId: tabId,
+      types: ['main_frame', 'sub_frame', 'stylesheet', 'script', 'font', 'object', 'xmlhttprequest', 'other']
+    };
+
+    function finish() {
+      if (settled) return;
+      settled = true;
+      try {
+        chrome.webRequest.onBeforeRequest.removeListener(onBefore);
+        chrome.webRequest.onCompleted.removeListener(onDone);
+        chrome.webRequest.onErrorOccurred.removeListener(onDone);
+      } catch (e) { /* listeners may already be removed */ }
+      callback();
+    }
+
+    function trySettle() {
+      if (settled || !idleCheckEnabled) return;
+      // Wait for minIdleGap since last request
+      if (lastRequestTime && (Date.now() - lastRequestTime < minIdleGap)) {
+        setTimeout(trySettle, minIdleGap);
+        return;
+      }
+      if (Object.keys(pendingRequests).length > 0) return;
+      // Network is idle — verify tab is alive, then finish
+      chrome.tabs.sendMessage(tabId, {}, (resp) => {
+        if (resp !== undefined) {
+          finish();
+        } else {
+          // Tab might not be ready, retry
+          setTimeout(trySettle, minIdleGap);
+        }
+      });
+    }
+
+    function onBefore(details) {
+      pendingRequests[details.requestId] = 1;
+      lastRequestTime = Date.now();
+    }
+
+    function onDone(details) {
+      delete pendingRequests[details.requestId];
+      if (lastRequestTime && Object.keys(pendingRequests).length === 0) {
+        setTimeout(trySettle, minIdleGap);
+      }
+    }
+
+    // Start listening before the action
+    chrome.webRequest.onBeforeRequest.addListener(onBefore, filter);
+    chrome.webRequest.onCompleted.addListener(onDone, filter);
+    chrome.webRequest.onErrorOccurred.addListener(onDone, filter);
+
+    // Execute the action (click next / scroll)
+    actionFn(() => {
+      // After action completes, wait crawlDelay before enabling idle check
+      setTimeout(() => {
+        idleCheckEnabled = true;
+        trySettle();
+      }, crawlDelay);
+
+      // Hard timeout — force finish after maxWait
+      setTimeout(finish, maxWait);
+    });
+  }
+
+  /**
+   * Deduplicate rows using JSON string comparison (ported from IDS).
+   * Removes exact duplicate rows from accumulated data.
+   */
+  function deduplicateRows(data) {
+    const seen = new Set();
+    return data.filter(row => {
+      const key = JSON.stringify(row);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   function crawlNextPage() {
     if (!state.scraping) return;
     
     // Get page hash for duplicate detection
     sendToContentScript({ action: 'getPageHash' }, (hashResponse) => {
-      if (hashResponse && state.visitedHashes.includes(hashResponse.hash)) {
-        setStatus('Reached end (duplicate page detected)');
-        stopCrawl();
-        return;
+      if (hashResponse && hashResponse.hash) {
+        // IDS-style check: compare against last 2 visited hashes only
+        const hashes = state.visitedHashes;
+        const h = hashResponse.hash;
+        if ((hashes.length >= 1 && hashes[hashes.length - 1] === h) ||
+            (hashes.length >= 2 && hashes[hashes.length - 2] === h)) {
+          setStatus('Reached end (duplicate page detected)');
+          stopCrawl();
+          return;
+        }
+        state.visitedHashes.push(h);
       }
-      
-      state.visitedHashes.push(hashResponse.hash);
       
       // Get data from current page
       sendToContentScript({ action: 'getTableData', selector: state.tableSelector }, (dataResponse) => {
         if (dataResponse && dataResponse.data) {
-          // Append to existing data
-          state.rawData = state.rawData.concat(dataResponse.data);
+          // Append and deduplicate (IDS-style)
+          state.rawData = deduplicateRows(state.rawData.concat(dataResponse.data));
           processScrapedData(state.rawData);
           updateRowCount(state.rawData.length);
           updatePageCount(state.pages);
         }
         
-        // Click next
-        sendToContentScript({ action: 'clickNext', selector: state.nextSelector }, (clickResponse) => {
-          if (clickResponse && clickResponse.success) {
-            state.pages++;
-            setStatus(`Crawling... Page ${state.pages}`);
-            
-            // Wait for page to load, then continue
-            const delay = state.settings?.crawlDelay || 2000;
-            setTimeout(crawlNextPage, delay);
-          } else {
-            setStatus('Reached end (no more pages)');
-            stopCrawl();
+        // Use network-aware page load detection for navigation
+        waitForNetworkIdle(
+          (done) => {
+            sendToContentScript({ action: 'clickNext', selector: state.nextSelector }, (clickResponse) => {
+              if (clickResponse && clickResponse.success) {
+                state.pages++;
+                setStatus(`Crawling... Page ${state.pages}`);
+                done();
+              } else {
+                setStatus('Reached end (no more pages)');
+                stopCrawl();
+              }
+            });
+          },
+          () => {
+            // Network idle — page loaded, continue crawling
+            crawlNextPage();
           }
-        });
+        );
       });
     });
   }
