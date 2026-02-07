@@ -876,7 +876,7 @@
               const jsonStr = match[1];
               const data = JSON.parse(jsonStr);
               mergeJSONProductData(result, data, config);
-              if (result.title && result.price) return result; // Got enough
+              // Do NOT early return — keep scanning all scripts for more data
             }
           } catch(e) {
             // JSON parse failures are expected for partial matches
@@ -891,11 +891,12 @@
   /**
    * Walk JSON data structure to find product fields
    * Handles common e-commerce JSON structures from AliExpress, Alibaba, etc.
+   * Extended with AliExpress module paths (skuModule, specsModule, etc.)
    */
   function mergeJSONProductData(result, data, config) {
     if (!data || typeof data !== 'object') return;
     
-    // Walk known paths for product data
+    // Walk known paths for product data — including AliExpress page modules
     const searchPaths = [
       data,
       data.data,
@@ -906,7 +907,25 @@
       data.storeModule,
       data.priceModule,
       data.titleModule,
-      data.descriptionModule
+      data.descriptionModule,
+      // AliExpress-specific modules
+      data.skuModule,
+      data.specsModule,
+      data.orderModule,
+      data.imageModule,
+      data.shippingModule,
+      data.commonModule,
+      data.quantityModule,
+      data.reviewModule,
+      data.couponModule,
+      data.buyerProtectionModule,
+      // Nested data paths
+      data.data?.product,
+      data.data?.priceInfo,
+      data.data?.skuInfo,
+      data.data?.specsInfo,
+      data.result,
+      data.result?.product,
     ].filter(Boolean);
     
     for (const obj of searchPaths) {
@@ -919,13 +938,15 @@
       // Price
       if (!result.price) {
         const priceObj = obj.price || obj.priceInfo || obj.formatedActivityPrice || 
-                         obj.activityPrice || obj.minPrice || null;
+                         obj.activityPrice || obj.minPrice || obj.salePrice || null;
         if (typeof priceObj === 'object' && priceObj) {
           result.price = priceObj.value || priceObj.minPrice || priceObj.formatedPrice || 
-                         priceObj.actPrice || priceObj.salePrice || null;
-          result.originalPrice = priceObj.originalPrice || priceObj.maxPrice || 
-                                 priceObj.formatedBiggestPrice || null;
-          result.currency = priceObj.currency || priceObj.currencySymbol || null;
+                         priceObj.actPrice || priceObj.salePrice || priceObj.discountPrice?.minPrice ||
+                         priceObj.formatedActivityPrice || null;
+          result.originalPrice = result.originalPrice || priceObj.originalPrice || priceObj.maxPrice || 
+                                 priceObj.formatedBiggestPrice || priceObj.formatedPrice || null;
+          result.currency = result.currency || priceObj.currency || priceObj.currencySymbol || 
+                            priceObj.currencyCode || null;
         } else if (priceObj) {
           result.price = priceObj;
         }
@@ -934,18 +955,18 @@
       // Images
       if (!result.images || result.images.length === 0) {
         const imgs = obj.images || obj.imagePathList || obj.imagePaths || 
-                     obj.gallery || obj.imageList || null;
+                     obj.gallery || obj.imageList || obj.productImages || null;
         if (Array.isArray(imgs) && imgs.length > 0) {
           result.images = imgs.map(img => {
             if (typeof img === 'string') return img.startsWith('//') ? 'https:' + img : img;
-            return img.url || img.src || img.imgUrl || '';
+            return img.url || img.src || img.imgUrl || img.imageUrl || '';
           }).filter(Boolean).slice(0, 15);
         }
       }
       
       // SKU
       if (!result.sku) {
-        result.sku = obj.sku || obj.productId || obj.itemId || null;
+        result.sku = obj.sku || obj.productId || obj.itemId || obj.id || null;
       }
       
       // Category
@@ -955,13 +976,80 @@
           .map(c => typeof c === 'string' ? c : (c.name || c.title || ''))
           .filter(Boolean).join(' > ');
       }
+      // AliExpress categoryPath
+      if (!result.category && obj.categoryPath) {
+        result.category = obj.categoryPath;
+      }
       
       // Rating
       if (!result.rating) {
-        result.rating = obj.averageStar || obj.averageRating || obj.rating || null;
+        result.rating = obj.averageStar || obj.averageRating || obj.rating || 
+                        obj.evarageStar || obj.starRating || null;
       }
       if (!result.reviewCount) {
-        result.reviewCount = obj.totalReviews || obj.reviewCount || obj.tradeCount || null;
+        result.reviewCount = obj.totalReviews || obj.reviewCount || obj.tradeCount || 
+                             obj.totalCount || obj.feedbackCount || null;
+      }
+      
+      // Order count (AliExpress)
+      if (!result.orders) {
+        result.orders = obj.tradeCount || obj.orderCount || obj.totalOrder || null;
+      }
+      
+      // Description
+      if (!result.description) {
+        result.description = obj.description || obj.detailDesc || obj.productDescription || null;
+      }
+      
+      // Brand
+      if (!result.brand) {
+        result.brand = obj.brand || obj.brandName || 
+                       (typeof obj.brand === 'object' ? obj.brand?.name : null) || null;
+      }
+      
+      // Stock / quantity
+      if (result.stock === undefined) {
+        const stock = obj.stock || obj.quantity || obj.totalAvailQuantity || 
+                      obj.availQuantity || obj.totalStock || null;
+        if (stock !== null && stock !== undefined) {
+          result.stock = typeof stock === 'number' ? stock : parseInt(stock, 10) || stock;
+        }
+      }
+      
+      // Shipping
+      if (!result.shipping) {
+        const ship = obj.shippingFee || obj.freightAmount || obj.shippingPrice || null;
+        if (ship) {
+          result.shipping = typeof ship === 'object' ? (ship.formatedAmount || ship.value || ship) : ship;
+        }
+        if (!result.shipping && obj.freeShipping) {
+          result.shipping = 'Free Shipping';
+        }
+      }
+      
+      // Min order (Alibaba)
+      if (!result.minOrder) {
+        result.minOrder = obj.minOrder || obj.moq || obj.minOrderQuantity || null;
+      }
+      
+      // Variants / SKU properties
+      if ((!result.variants || result.variants.length === 0) && obj.skuPriceList) {
+        result.variants = obj.skuPriceList.map(sku => ({
+          id: sku.skuId || sku.id,
+          price: sku.skuVal?.actSkuCalPrice || sku.skuVal?.skuCalPrice || sku.price,
+          stock: sku.skuVal?.availQuantity || sku.stock,
+          attributes: sku.skuAttr || sku.skuPropIds || ''
+        }));
+      }
+      if ((!result.variants || result.variants.length === 0) && obj.productSKUPropertyList) {
+        // AliExpress property groups (color, size, etc.)
+        result.variantGroups = obj.productSKUPropertyList.map(group => ({
+          name: group.skuPropertyName,
+          values: (group.skuPropertyValues || []).map(v => ({
+            name: v.propertyValueDisplayName || v.propertyValueName,
+            image: v.skuPropertyImagePath || null
+          }))
+        }));
       }
       
       // Specifications
@@ -973,6 +1061,13 @@
         result.specifications = props.map(p => ({
           name: p.name || p.attrName || p.key || '',
           value: p.value || p.attrValue || p.val || ''
+        })).filter(s => s.name && s.value);
+      }
+      // AliExpress attrList
+      if (!result.specifications && obj.attrList) {
+        result.specifications = obj.attrList.map(a => ({
+          name: a.attrName || a.name || '',
+          value: a.attrValue || a.value || ''
         })).filter(s => s.name && s.value);
       }
     }
@@ -1691,6 +1786,46 @@
       }
     }
     
+    // === SPA RETRY ===
+    // If title + price are still empty, page may be SPA (React/Vue hydration pending).
+    // Wait 2s and retry JSON + DOM extraction once.
+    if (!product.title && !product.price && !product._retried) {
+      product._retried = true;
+      console.log('[DropshipTracker] Missing title+price — retrying in 2s (SPA hydration)');
+      setTimeout(() => {
+        // Re-run JSON extraction
+        const retryJSON = extractEmbeddedJSON(config);
+        if (retryJSON) {
+          if (retryJSON.title) product.title = retryJSON.title;
+          if (retryJSON.price) product.price = retryJSON.price;
+          if (retryJSON.originalPrice) product.originalPrice = product.originalPrice || retryJSON.originalPrice;
+          if (retryJSON.currency) product.currency = product.currency || retryJSON.currency;
+          if (retryJSON.images?.length > 0) product.images = product.images?.length ? product.images : retryJSON.images;
+          if (retryJSON.rating) product.rating = product.rating || retryJSON.rating;
+          if (retryJSON.reviewCount) product.reviewCount = product.reviewCount || retryJSON.reviewCount;
+          if (retryJSON.description) product.description = product.description || retryJSON.description;
+          if (retryJSON.sku) product.sku = product.sku || retryJSON.sku;
+          if (retryJSON.brand) product.brand = product.brand || retryJSON.brand;
+          if (retryJSON.stock !== undefined) product.stock = product.stock ?? retryJSON.stock;
+          if (retryJSON.orders) product.orders = product.orders || retryJSON.orders;
+        }
+        // Retry h1 fallback
+        if (!product.title) {
+          const h1 = document.querySelector('h1');
+          if (h1) product.title = h1.textContent?.trim();
+        }
+        // Retry price fallback
+        if (!product.price) {
+          const priceEl = document.querySelector('[class*="price" i]:not([class*="original"]):not([class*="old"])');
+          if (priceEl) product.price = parsePriceText(priceEl.textContent);
+        }
+        delete product._retried;
+        callback(product);
+      }, 2000);
+      return;
+    }
+    
+    delete product._retried;
     callback(product);
   }
   
