@@ -9,6 +9,6 @@
     "clean": "del /Q popup.js onload.js 2>nul & echo cleaned"
   },
   "devDependencies": {
-    "esbuild": "^0.20.0"
+    "esbuild": "^0.25.0"
   }
 }
