@@ -1119,6 +1119,14 @@
                     updates.productCode = scrapedId;
                   }
                   
+                  // Update URL if current URL is a search/listing page (not a product URL)
+                  if (sanitized.url && product.supplierUrl) {
+                    const isSearchUrl = /\/search|\/wholesale|SearchText|SearchScene|page\?/i.test(product.supplierUrl);
+                    if (isSearchUrl) {
+                      updates.supplierUrl = sanitized.url;
+                    }
+                  }
+                  
                   // Recalculate selling price if supplier price changed
                   if (updates.supplierPrice && updates.supplierPrice !== product.supplierPrice) {
                     updates.yourPrice = calculateSellingPrice(updates.supplierPrice, parsePrice(updates.shipping || ''));
@@ -2586,6 +2594,38 @@
         return '';
       };
       
+      /**
+       * Auto-detect product URL from raw row data.
+       * Scans keys ending in 'href' or '@href' for a product detail URL.
+       * Prioritizes product-detail/item URLs over generic links.
+       */
+      const findProductUrl = () => {
+        const candidates = [];
+        for (const [key, val] of Object.entries(rawRow)) {
+          if (!val || typeof val !== 'string') continue;
+          if (!key.endsWith('href') && !key.endsWith('@href') && !key.endsWith('@link')) continue;
+          
+          let url = val;
+          // @link fields have format "text ||| url"
+          if (key.endsWith('@link') && val.includes('|||')) {
+            url = val.split('|||').pop().trim();
+          }
+          
+          if (!url.startsWith('http')) continue;
+          
+          // Skip tracking/ad/click URLs
+          if (/click\.|\/track|\/ad[\/\?]|google-analytics|advertis/i.test(url)) continue;
+          
+          // Prioritize product detail URLs
+          const isProductUrl = /\/product[-_]?detail|\/item\/\d|\/product\/\d|\/dp\/|\/p\/|\.html/i.test(url);
+          candidates.push({ url, priority: isProductUrl ? 1 : 2 });
+        }
+        
+        if (candidates.length === 0) return '';
+        candidates.sort((a, b) => a.priority - b.priority);
+        return candidates[0].url;
+      };
+      
       // Product ID: supplier's item number (e.g., AliExpress item #) = primary identifier
       const supplierProductId = getMappedValue('product_code') || rawRow._supplierProductId || '';
       const supplierSku = getMappedValue('supplier_sku') || rawRow._supplierSku || '';
@@ -2623,7 +2663,7 @@
         description: getMappedValue('description') || rawRow.Description || '',
         shortDescription: getMappedValue('short_description') || '',
         images: allImages.length > 0 ? allImages.join(',') : '',
-        supplierUrl: getMappedValue('url') || rawRow.URL || state.tabUrl,
+        supplierUrl: getMappedValue('url') || findProductUrl() || rawRow.URL || state.tabUrl,
         domain: state.tabDomain || new URL(state.tabUrl || 'http://unknown').hostname,
         variants: getMappedValue('variants') || rawRow.Variants || '',
         color: getMappedValue('color') || '',
