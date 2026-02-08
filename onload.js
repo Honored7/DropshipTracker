@@ -129,7 +129,7 @@
       ]
     },
     'alibaba.com': {
-      productIdPattern: /\/product\/([\d-]+)\.html|product_detail[^?]*?([\d]{5,})|offer\/([\d]+)/,
+      productIdPattern: /\/product\/(\d+)\.html|product-detail\/[^_]*_(\d{5,})\.html|offer\/(\d+)/,
       titleSelectors: [
         'h1.ma-title',
         '.detail-title',
@@ -151,10 +151,11 @@
         '[class*="price"] s'
       ],
       imageSelectors: [
-        '.detail-gallery-turn img',
-        '.main-image img',
-        '[class*="gallery"] img',
-        '.thumb-list img'
+        '.detail-gallery-turn img:not([src$=".svg"])',
+        '.main-image img:not([src$=".svg"])',
+        '[class*="gallery"] img:not([src$=".svg"])',
+        '.thumb-list img:not([src$=".svg"])',
+        'img[src*="alicdn.com"][src$=".jpg"]'
       ],
       variantSelectors: ['.sku-attr-item', '.obj-attr-item', '[class*="sku-prop"]'],
       reviewSelectors: ['.rating-item', '[class*="review"]'],
@@ -1475,6 +1476,15 @@
       }
     }
     
+    // === CLEAN TITLE: strip SEO spam ===
+    if (product.title) {
+      // Remove "- Buy keyword keyword keyword..." pattern common on Alibaba
+      product.title = product.title
+        .replace(/\s*-\s*Buy\s+.*/i, '')
+        .replace(/\s*\|\s*[A-Za-z]+\.com.*$/i, '') // "| Alibaba.com" suffix
+        .trim();
+    }
+    
     // === BETTER PRICE EXTRACTION ===
     if (!product.price) {
       const priceElements = document.querySelectorAll('[class*="price" i]:not([class*="compare"]):not([class*="original"]):not([class*="old"])');
@@ -1762,9 +1772,10 @@
     // === RATING ===
     if (!product.rating) {
       const ratingSelectors = [
-        '[class*="rating"] [class*="score"], [class*="Rating"] [class*="Score"]',
-        '[class*="star-rating"] [class*="current"]',
         '[itemprop="ratingValue"]',
+        '[class*="rating"] [class*="score"]:not([class*="count"]):not([class*="num"])',
+        '[class*="Rating"] [class*="Score"]:not([class*="count"]):not([class*="num"])',
+        '[class*="star-rating"] [class*="current"]',
         '[aria-label*="star"], [aria-label*="rating"]'
       ];
       for (const sel of ratingSelectors) {
@@ -1774,8 +1785,12 @@
             const text = el.textContent || el.getAttribute('aria-label') || '';
             const match = text.match(/(\d+(?:\.\d+)?)/);
             if (match) {
-              product.rating = parseFloat(match[1]);
-              break;
+              const val = parseFloat(match[1]);
+              // Rating should be 0-5 or 0-10 range; reject if looks like a count
+              if (val <= 10) {
+                product.rating = val;
+                break;
+              }
             }
           }
         } catch(e) {}
@@ -1888,9 +1903,13 @@
    */
   function isValidProductImage(src) {
     if (!src || !src.includes('http')) return false;
-    const exclude = ['avatar', 'logo', 'icon', 'sprite', 'banner', 'flag', 'badge', 'loading', 'placeholder'];
+    // Reject SVGs (usually icons, not product photos)
+    if (/\.svg(\?|$)/i.test(src)) return false;
+    // Reject tiny placeholder dimensions in URL (e.g., tps-12-10, _50x50)
+    if (/tps-\d{1,2}-\d{1,2}|_\d{1,2}x\d{1,2}/i.test(src)) return false;
+    const exclude = ['avatar', 'logo', 'icon', 'sprite', 'banner', 'flag', 'badge', 'loading', 'placeholder', 'spacer', 'pixel', 'tracking'];
     const lower = src.toLowerCase();
-    return !exclude.some(ex => lower.includes(ex)) && (lower.includes('product') || lower.includes('item') || lower.includes('aliexpress') || lower.includes('alibaba') || src.match(/\.(jpg|jpeg|png|webp)/i));
+    return !exclude.some(ex => lower.includes(ex)) && (lower.includes('product') || lower.includes('item') || lower.includes('aliexpress') || lower.includes('alibaba') || lower.includes('alicdn') || src.match(/\.(jpg|jpeg|png|webp)/i));
   }
   
   /**
