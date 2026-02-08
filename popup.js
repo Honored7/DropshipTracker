@@ -822,7 +822,7 @@
           'Domain': sanitized.domain || '',
           'Variants': JSON.stringify(sanitized.variants || []),
           'Variant Groups': JSON.stringify(sanitized.variantGroups || []),
-          'Reviews': (sanitized.reviews || []).length + ' reviews',
+          'Reviews': JSON.stringify(sanitized.reviews || []),
           'Rating': sanitized.rating || '',
           'Review Count': sanitized.reviewCount || '',
           'Sold': sanitized.soldCount || sanitized.orders || '',
@@ -1650,7 +1650,7 @@
       }
       if (Object.keys(pendingRequests).length > 0) return;
       // Network is idle — verify tab is alive, then finish
-      chrome.tabs.sendMessage(tabId, {}, (resp) => {
+      chrome.tabs.sendMessage(tabId, { action: 'ping' }, (resp) => {
         if (resp !== undefined) {
           finish();
         } else {
@@ -2173,9 +2173,8 @@
    */
   function selectAllProducts() {
     const data = state.catalogTable.getData();
-    data.forEach((row, index) => {
-      state.catalogTable.setDataAtCell(index, 0, true, 'bulkSelect');
-    });
+    const changes = data.map((row, index) => [index, 0, true]);
+    state.catalogTable.setDataAtCell(changes, 'bulkSelect');
     updateCatalogSelection();
     showToast(`Selected ${data.length} products`, 'info');
   }
@@ -2185,9 +2184,8 @@
    */
   function deselectAllProducts() {
     const data = state.catalogTable.getData();
-    data.forEach((row, index) => {
-      state.catalogTable.setDataAtCell(index, 0, false, 'bulkSelect');
-    });
+    const changes = data.map((row, index) => [index, 0, false]);
+    state.catalogTable.setDataAtCell(changes, 'bulkSelect');
     updateCatalogSelection();
     showToast('Selection cleared', 'info');
   }
@@ -2197,10 +2195,8 @@
    */
   function invertSelection() {
     const data = state.catalogTable.getData();
-    data.forEach((row, index) => {
-      const current = row[0] === true;
-      state.catalogTable.setDataAtCell(index, 0, !current, 'bulkSelect');
-    });
+    const changes = data.map((row, index) => [index, 0, row[0] !== true]);
+    state.catalogTable.setDataAtCell(changes, 'bulkSelect');
     updateCatalogSelection();
     showToast('Selection inverted', 'info');
   }
@@ -2411,17 +2407,17 @@
       </div>`;
     }
     
-    if (product.review_count) {
+    if (product.reviewCount || product.review_count) {
       detailsHtml += `<div class="detail-row">
         <span class="detail-label">Reviews:</span>
-        <span class="detail-value">${product.review_count} reviews</span>
+        <span class="detail-value">${product.reviewCount || product.review_count} reviews</span>
       </div>`;
     }
     
-    if (product.sold_count) {
+    if (product.soldCount || product.sold_count) {
       detailsHtml += `<div class="detail-row">
         <span class="detail-label">Sold:</span>
-        <span class="detail-value">${product.sold_count} units</span>
+        <span class="detail-value">${product.soldCount || product.sold_count} units</span>
       </div>`;
     }
     
@@ -2666,7 +2662,7 @@
         images: allImages.length > 0 ? allImages.join(',') : '',
         supplierUrl: getMappedValue('url') || findProductUrl() || rawRow.URL || state.tabUrl,
         domain: state.tabDomain || new URL(state.tabUrl || 'http://unknown').hostname,
-        variants: getMappedValue('variants') || rawRow.Variants || '',
+        variants: getMappedValue('variants') || rawRow.Variants || rawRow.variants || '',
         color: getMappedValue('color') || '',
         size: getMappedValue('size') || '',
         shipping: getMappedValue('shipping') || rawRow.Shipping || '',
@@ -2676,7 +2672,7 @@
         rating: getMappedValue('rating') || rawRow.Rating || '',
         reviewCount: getMappedValue('review_count') || rawRow.Reviews || rawRow['Review Count'] || '',
         soldCount: getMappedValue('sold_count') || rawRow['Sold'] || rawRow['Orders'] || '',
-        reviews: getMappedValue('reviews') || rawRow['Review Text'] || '',
+        reviews: getMappedValue('reviews') || rawRow.Reviews || rawRow.reviews || rawRow['Review Text'] || '',
         // Store info
         storeName: getMappedValue('store_name') || '',
         storeRating: getMappedValue('store_rating') || '',

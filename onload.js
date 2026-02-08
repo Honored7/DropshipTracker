@@ -1325,15 +1325,15 @@
         const data = JSON.parse(jsonLd.textContent);
         const prod = data['@type'] === 'Product' ? data : (data.product || null);
         if (prod) {
-          product.title = prod.name;
-          product.description = prod.description;
-          product.price = prod.offers?.price || prod.offers?.lowPrice;
-          product.originalPrice = prod.offers?.highPrice || null;
-          product.currency = prod.offers?.priceCurrency;
-          product.sku = prod.sku;
-          product.brand = prod.brand?.name || prod.brand;
-          product.availability = prod.offers?.availability;
-          if (prod.image) {
+          if (!product.title && prod.name) product.title = prod.name;
+          if (!product.description && prod.description) product.description = prod.description;
+          if (!product.price) product.price = prod.offers?.price || prod.offers?.lowPrice;
+          if (!product.originalPrice) product.originalPrice = prod.offers?.highPrice || null;
+          if (!product.currency && prod.offers?.priceCurrency) product.currency = prod.offers?.priceCurrency;
+          if (!product.sku && prod.sku) product.sku = prod.sku;
+          if (!product.brand) product.brand = prod.brand?.name || prod.brand;
+          if (!product.availability) product.availability = prod.offers?.availability;
+          if (prod.image && (!product.images || product.images.length === 0)) {
             product.images = Array.isArray(prod.image) ? prod.image : [prod.image];
           }
           if (prod.aggregateRating) {
@@ -1698,7 +1698,20 @@
       }
     });
     
-    product.images = Array.from(imageUrls).slice(0, 15);
+    // Merge DOM-discovered images with any already found from JSON/JSON-LD
+    const domImages = Array.from(imageUrls).slice(0, 15);
+    if (!product.images || product.images.length === 0) {
+      product.images = domImages;
+    } else {
+      // Add new images not already present
+      const existing = new Set(product.images.map(u => u.replace(/^https?:/, '')));
+      for (const img of domImages) {
+        if (!existing.has(img.replace(/^https?:/, ''))) {
+          product.images.push(img);
+        }
+      }
+      product.images = product.images.slice(0, 20);
+    }
     
     // === VARIANTS ===
     product.variantGroups = extractVariantGroups(config);
@@ -2097,29 +2110,7 @@
     return results;
   }
   
-  /**
-   * Extract variant/option information
-   */
-  function extractVariants(selectors) {
-    if (!selectors) return [];
-    const variants = [];
-    
-    for (const selector of selectors) {
-      try {
-        document.querySelectorAll(selector).forEach(el => {
-          variants.push({
-            name: el.getAttribute('title') || el.textContent?.trim(),
-            image: el.querySelector('img')?.src,
-            selected: el.classList.contains('selected') || el.classList.contains('active'),
-            value: el.getAttribute('data-value') || el.getAttribute('data-sku')
-          });
-        });
-        if (variants.length > 0) break;
-      } catch (e) {}
-    }
-    
-    return variants;
-  }
+  // extractVariants() removed — extractVariantGroups() is the active implementation
   
   /**
    * Let user select next button
@@ -2627,10 +2618,6 @@
           value: extractWithCustomSelector(request.selector),
           allValues: extractAllWithSelector(request.selector)
         });
-        return true;
-        
-      case 'ping':
-        sendResponse({ alive: true, url: window.location.href });
         return true;
     }
   });
