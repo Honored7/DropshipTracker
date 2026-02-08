@@ -46,7 +46,8 @@
       highlightTable(contentState.detectedTables[0]);
     }
     callback({
-      found: contentState.detectedTables.length,
+      tableCount: contentState.detectedTables.length,
+      selector: contentState.detectedTables.length > 0 ? contentState.detectedTables[0].selector : null,
       tables: contentState.detectedTables.map((t, i) => ({
         index: i,
         selector: t.selector,
@@ -161,8 +162,8 @@
     const table = contentState.detectedTables[contentState.currentTableIndex];
     highlightTable(table);
     callback({
-      index: contentState.currentTableIndex,
-      total: contentState.detectedTables.length,
+      currentTable: contentState.currentTableIndex,
+      tableCount: contentState.detectedTables.length,
       selector: table.selector,
       childCount: table.childCount
     });

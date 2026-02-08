@@ -53,7 +53,8 @@ export function findTables(callback) {
   }
 
   callback({
-    found: contentState.detectedTables.length,
+    tableCount: contentState.detectedTables.length,
+    selector: contentState.detectedTables.length > 0 ? contentState.detectedTables[0].selector : null,
     tables: contentState.detectedTables.map((t, i) => ({
       index: i,
       selector: t.selector,
@@ -205,8 +206,8 @@ export function nextTable(callback) {
   highlightTable(table);
 
   callback({
-    index: contentState.currentTableIndex,
-    total: contentState.detectedTables.length,
+    currentTable: contentState.currentTableIndex,
+    tableCount: contentState.detectedTables.length,
     selector: table.selector,
     childCount: table.childCount
   });
