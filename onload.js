@@ -129,18 +129,20 @@
       ]
     },
     'alibaba.com': {
-      productIdPattern: /\/product\/(\d+)\.html/,
+      productIdPattern: /\/product\/([\d-]+)\.html|product_detail[^?]*?([\d]{5,})|offer\/([\d]+)/,
       titleSelectors: [
         'h1.ma-title',
         '.detail-title',
-        'h1[class*="title"]',
-        '.module-pdp-title h1'
+        '.module-pdp-title h1',
+        'h1[class*="title"]'
       ],
       priceSelectors: [
+        '.ma-ref-price .ma-ref-price-value',
         '.ma-ref-price',
+        '.price-original .price-value',
         '.price-original',
-        '[class*="price"]',
-        '.module-pdp-price'
+        '.module-pdp-price .price-value',
+        '.module-pdp-price .price'
       ],
       originalPriceSelectors: [
         '[class*="price--original"]',
@@ -225,7 +227,10 @@
     
     if (config && config.productIdPattern) {
       const match = url.match(config.productIdPattern);
-      if (match) return match[1];
+      if (match) {
+        // Return first non-null capture group (pattern may have alternations)
+        return match[1] || match[2] || match[3] || match[0];
+      }
     }
     
     // Try common patterns
@@ -1419,12 +1424,12 @@
     // === SITE-SPECIFIC SELECTORS ===
     if (config) {
       if (!product.title) product.title = trySelectors(config.titleSelectors);
-      if (!product.price) product.price = trySelectors(config.priceSelectors);
+      if (!product.price) product.price = tryPriceSelectors(config.priceSelectors);
       if (!product.shipping) product.shipping = trySelectors(config.shippingSelectors);
       
       // Original/list price from site-specific selectors
       if (!product.originalPrice && config.originalPriceSelectors) {
-        product.originalPrice = trySelectors(config.originalPriceSelectors);
+        product.originalPrice = tryPriceSelectors(config.originalPriceSelectors);
       }
       
       // Breadcrumbs/category from site-specific selectors
@@ -2010,11 +2015,45 @@
       try {
         const el = document.querySelector(selector);
         if (el) {
-          return el.textContent?.trim() || el.value;
+          const text = el.textContent?.trim() || el.value;
+          if (text) return text;
         }
       } catch (e) {}
     }
     return null;
+  }
+
+  /**
+   * Try selectors specifically for price fields — returns parsed numeric price
+   * Avoids returning raw concatenated text from container elements
+   */
+  function tryPriceSelectors(selectors) {
+    if (!selectors) return null;
+    for (const selector of selectors) {
+      try {
+        const el = document.querySelector(selector);
+        if (el) {
+          // For price, try innermost text nodes first to avoid concatenation
+          const directText = getDirectTextContent(el);
+          const parsed = parsePriceText(directText || el.textContent);
+          if (parsed && parsed < 1000000) return parsed; // Sanity check
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  /**
+   * Get direct text content of an element (not from children)
+   */
+  function getDirectTextContent(el) {
+    let text = '';
+    for (const node of el.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.textContent;
+      }
+    }
+    return text.trim() || null;
   }
   
   /**

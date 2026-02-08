@@ -1112,6 +1112,18 @@
                     lastEnriched: Date.now()
                   };
                   
+                  // Update Product ID if we got one and the current code is auto-generated
+                  const scrapedId = sanitized.productId || sanitized.sku || '';
+                  if (scrapedId && product.productCode && product.productCode.startsWith('PROD-')) {
+                    updates.supplierProductId = scrapedId;
+                    updates.productCode = scrapedId;
+                  }
+                  
+                  // Recalculate selling price if supplier price changed
+                  if (updates.supplierPrice && updates.supplierPrice !== product.supplierPrice) {
+                    updates.yourPrice = calculateSellingPrice(updates.supplierPrice, parsePrice(updates.shipping || ''));
+                  }
+                  
                   chrome.runtime.sendMessage({
                     action: 'updateCatalogProduct',
                     productCode: product.productCode,
@@ -3415,13 +3427,21 @@
       return parseFloat(CSCartMapper.parsePrice(priceStr)) || 0;
     }
     // Fallback if CSCartMapper not loaded
-    if (typeof priceStr === 'number') return priceStr;
+    if (typeof priceStr === 'number') return priceStr > 1000000 ? 0 : priceStr;
     if (!priceStr) return 0;
+    // Extract first price-like number (with currency symbol nearby)
+    const priceMatch = priceStr.toString().match(/[\$\u20AC\u00A3\u00A5\u20A6]?\s*([\d,]+\.?\d{0,2})\b/);
+    if (priceMatch) {
+      const num = parseFloat(priceMatch[1].replace(/,/g, ''));
+      if (num > 0.01 && num < 1000000) return num;
+    }
+    // Final fallback: strip non-numeric
     const cleaned = priceStr.toString().replace(/[^0-9.,]/g, '');
     const normalized = cleaned.includes(',') && cleaned.indexOf(',') > cleaned.indexOf('.')
       ? cleaned.replace('.', '').replace(',', '.')
       : cleaned.replace(',', '');
-    return parseFloat(normalized) || 0;
+    const result = parseFloat(normalized) || 0;
+    return result < 1000000 ? result : 0; // Sanity cap
   }
 
   function calculateSellingPrice(supplierPrice, shippingCost = 0) {
