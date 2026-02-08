@@ -1783,25 +1783,26 @@
     $('#testScrapeResults').hide();
     $('#testScrapeModal').modal('show');
 
-    // Run product extraction + table extraction in parallel
+    // Run product extraction first, then table extraction (sequential to avoid
+    // Chrome message channel conflicts with concurrent async sendResponse)
     let productResult = null;
     let tableResult = null;
-    let done = 0;
 
-    function checkDone() {
-      done++;
-      if (done < 2) return;
+    // Safety timeout — if no response in 15s, render what we have
+    const timeout = setTimeout(() => {
+      console.warn('[DropshipTracker] Test scrape timed out');
       renderTestDiagnostic(productResult, tableResult);
-    }
+    }, 15000);
 
     sendToContentScript({ action: 'extractProduct' }, (response) => {
       productResult = response;
-      checkDone();
-    });
-
-    sendToContentScript({ action: 'getTableData', selector: state.tableSelector || '' }, (response) => {
-      tableResult = response;
-      checkDone();
+      
+      // Now run table extraction after product extraction completes
+      sendToContentScript({ action: 'getTableData', selector: state.tableSelector || '' }, (response2) => {
+        tableResult = response2;
+        clearTimeout(timeout);
+        renderTestDiagnostic(productResult, tableResult);
+      });
     });
   }
 
