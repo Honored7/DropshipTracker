@@ -577,9 +577,7 @@
       // Update the mapping section header to reflect the selected template
       const templateNames = { cscart: 'CS-Cart', shopify: 'Shopify', woocommerce: 'WooCommerce', prestashop: 'PrestaShop', magento: 'Magento', bigcommerce: 'BigCommerce' };
       const templateLabel = templateNames[templateId] || 'Export';
-      $('#fieldMappingSection h4').contents().first().replaceWith(
-        '<span class="glyphicon glyphicon-transfer"></span> Map Fields for ' + templateLabel + ' '
-      );
+      $('#mappingHeaderText').text('Map Fields for ' + templateLabel);
     });
 
     // Field mapping
@@ -1955,9 +1953,7 @@
     const selectedTemplate = $('#cartTemplateSelect').val() || 'export';
     const templateNames = { cscart: 'CS-Cart', shopify: 'Shopify', woocommerce: 'WooCommerce', prestashop: 'PrestaShop', magento: 'Magento', bigcommerce: 'BigCommerce' };
     const templateLabel = templateNames[selectedTemplate] || 'Export';
-    $('#fieldMappingSection h4').contents().first().replaceWith(
-      '<span class="glyphicon glyphicon-transfer"></span> Map Fields for ' + templateLabel + ' '
-    );
+    $('#mappingHeaderText').text('Map Fields for ' + templateLabel);
     
     $('#fieldMappingSection').slideDown();
     
