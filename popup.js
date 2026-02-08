@@ -436,8 +436,8 @@
             return td;
           }
         },
-        { data: 'review_count', readOnly: true, width: 55, className: 'htCenter' },
-        { data: 'sold_count', readOnly: true, width: 55, className: 'htCenter' },
+        { data: 'reviewCount', readOnly: true, width: 55, className: 'htCenter' },
+        { data: 'soldCount', readOnly: true, width: 55, className: 'htCenter' },
         { data: 'category', readOnly: true, width: 75 },
         { data: 'lastCheckedFormatted', readOnly: true, width: 65 },
         { 
@@ -1046,8 +1046,8 @@
             
             // Check tab title for error page indicators
             if (tabInfo.title && ERROR_PAGE_PATTERNS.test(tabInfo.title.trim())) {
-              showToast(`⚠ Error page for: ${product.title?.substring(0, 30)}... (${tabInfo.title.substring(0, 40)})`, 'warning');
-              setStatus('Product page returned an error');
+              showToast(`⚠ Skipped "${product.title?.substring(0, 25) || 'product'}" — page returned: ${tabInfo.title.substring(0, 50)}. Check the product URL.`, 'warning');
+              setStatus('Product page error — URL may be invalid or expired');
               finish(tabId);
               return;
             }
@@ -1092,8 +1092,8 @@
                     variantGroups: sanitized.variantGroups || product.variantGroups,
                     reviews: sanitized.reviews?.length > 0 ? sanitized.reviews : product.reviews,
                     rating: sanitized.rating || product.rating,
-                    reviewCount: sanitized.reviewCount || sanitized.review_count || product.reviewCount || product.review_count,
-                    soldCount: sanitized.soldCount || sanitized.sold_count || product.soldCount || product.sold_count,
+                    reviewCount: sanitized.reviewCount || sanitized.review_count || product.reviewCount || '',
+                    soldCount: sanitized.soldCount || sanitized.sold_count || sanitized.orders || product.soldCount || '',
                     shipping: sanitized.shipping || product.shipping,
                     brand: sanitized.brand || product.brand,
                     sku: sanitized.sku || product.sku,
@@ -2079,6 +2079,12 @@
     const displayData = state.catalog.map(p => ({
       selected: p.selected || false,  // Initialize checkbox state
       ...p,
+      // Normalize field names (backward compat: snake_case → camelCase)
+      reviewCount: p.reviewCount || p.review_count || '',
+      soldCount: p.soldCount || p.sold_count || p.orders || '',
+      rating: p.rating || '',
+      category: p.category || '',
+      supplierPrice: p.supplierPrice || 0,
       lastCheckedFormatted: p.lastChecked 
         ? new Date(p.lastChecked).toLocaleDateString() 
         : 'Never'
