@@ -1,0 +1,14 @@
+{
+  "name": "dropshiptracker",
+  "version": "2.0.0",
+  "private": true,
+  "description": "DropshipTracker Chrome Extension - Modular Build",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "clean": "del /Q popup.js onload.js 2>nul & echo cleaned"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  }
+}
