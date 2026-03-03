@@ -10,7 +10,10 @@
     customSelectors: {},
     selectorPickerActive: false,
     selectorPickerCallback: null,
-    selectorPickerField: null
+    selectorPickerField: null,
+    // Populated by the XHR/fetch interceptor (interceptor.js)
+    interceptedReviews: [],
+    interceptedProductData: null
   };
 
   // src/content/tableDetection.js
@@ -270,11 +273,15 @@
         '[class*="video"] video',
         '[class*="Video"] source'
       ],
+      // Patterns locate the START of the JSON object; brace-counting finishes extraction.
+      // window.runParams is AliExpress's primary product data container (added 2024+).
       jsonPatterns: [
-        "_initData\\s*=\\s*(\\{[\\s\\S]*?\\})\\s*;",
-        "__INITIAL_STATE__\\s*=\\s*(\\{[\\s\\S]*?\\});",
-        "window\\.__state__\\s*=\\s*(\\{[\\s\\S]*?\\});",
-        'data:\\s*(\\{[\\s\\S]*?"offers"[\\s\\S]*?\\})'
+        "window\\.runParams\\s*[=,]\\s*\\{",
+        "window\\.__runParams__\\s*=\\s*\\{",
+        "_initData\\s*=\\s*\\{",
+        "__INITIAL_STATE__\\s*=\\s*\\{",
+        "window\\.__state__\\s*=\\s*\\{",
+        '"offers"\\s*:\\s*\\{'
       ]
     },
     "alibaba.com": {
@@ -350,10 +357,11 @@
         "video source",
         'iframe[src*="video"]'
       ],
+      // Patterns locate the START of the JSON object; brace-counting finishes extraction.
       jsonPatterns: [
-        "__INITIAL_STATE__\\s*=\\s*(\\{[\\s\\S]*?\\});?",
-        "window\\.__data__\\s*=\\s*(\\{[\\s\\S]*?\\});?",
-        "_init_data_\\s*=\\s*(\\{[\\s\\S]*?\\})"
+        "__INITIAL_STATE__\\s*=\\s*\\{",
+        "window\\.__data__\\s*=\\s*\\{",
+        "_init_data_\\s*=\\s*\\{"
       ]
     }
   };
@@ -796,7 +804,163 @@
   }
   __name(extractElementData, "extractElementData");
 
+  // src/content/interceptor.js
+  function pageInterceptorCode() {
+    const EVENT_NAME = "__dropship_intercepted__";
+    const PATTERNS = [
+      /\/feedback\/(\d+)\//,
+      /\/call_action\/getProductDetail/,
+      /\/review\/list/,
+      /\/reviews\.json/,
+      /\/product\/review/i,
+      /ae-feedback\.aliexpress\.com/,
+      /\/search\/feedback\.htm/,
+      /\/feedback\.do/
+    ];
+    function shouldCapture(url) {
+      return PATTERNS.some((p) => p.test(url));
+    }
+    __name(shouldCapture, "shouldCapture");
+    function dispatch(url, data) {
+      window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { url, data } }));
+    }
+    __name(dispatch, "dispatch");
+    const OrigXHR = window.XMLHttpRequest;
+    window.XMLHttpRequest = function() {
+      const xhr = new OrigXHR(...arguments);
+      let _url = "";
+      const origOpen = xhr.open.bind(xhr);
+      xhr.open = function(method, url, ...rest) {
+        _url = url || "";
+        return origOpen(method, url, ...rest);
+      };
+      xhr.addEventListener("load", function() {
+        try {
+          if (shouldCapture(_url) && xhr.responseText) {
+            const json = JSON.parse(xhr.responseText);
+            dispatch(_url, json);
+          }
+        } catch (_) {
+        }
+      });
+      return xhr;
+    };
+    Object.assign(window.XMLHttpRequest, OrigXHR);
+    const origFetch = window.fetch;
+    window.fetch = function(input, init) {
+      const url = typeof input === "string" ? input : input?.url || "";
+      return origFetch.call(this, input, init).then((response) => {
+        if (shouldCapture(url)) {
+          response.clone().json().then((json) => {
+            dispatch(url, json);
+          }).catch(() => {
+          });
+        }
+        return response;
+      });
+    };
+  }
+  __name(pageInterceptorCode, "pageInterceptorCode");
+  function installInterceptor() {
+    try {
+      const scriptEl = document.createElement("script");
+      scriptEl.textContent = `(${pageInterceptorCode.toString()})();`;
+      (document.head || document.documentElement).prepend(scriptEl);
+      scriptEl.remove();
+    } catch (e) {
+      console.warn("[DropshipTracker] Could not inject interceptor:", e.message);
+      return;
+    }
+    window.addEventListener("__dropship_intercepted__", (event) => {
+      const { url, data } = event.detail || {};
+      if (!url || !data)
+        return;
+      handleInterceptedData(url, data);
+    });
+    console.log("[DropshipTracker] XHR/Fetch interceptor installed");
+  }
+  __name(installInterceptor, "installInterceptor");
+  function handleInterceptedData(url, data) {
+    const reviewList = data?.data?.evaViewList || data?.result?.reviews || data?.feedbackList || data?.reviewList || data?.data?.feedbackList || null;
+    if (Array.isArray(reviewList) && reviewList.length > 0) {
+      if (!contentState.interceptedReviews)
+        contentState.interceptedReviews = [];
+      for (const r of reviewList) {
+        contentState.interceptedReviews.push({
+          author: r.buyerName || r.userName || r.authorName || r.nickName || null,
+          rating: r.buyerEval || r.starRating || r.rating || null,
+          date: r.evalDate || r.date || r.createTime || null,
+          text: r.buyerFeedback || r.content || r.text || r.comment || null,
+          country: r.buyerCountry || r.country || null,
+          images: (r.images || r.picList || []).map(
+            (img) => typeof img === "string" ? img : img.imgUrl || img.url || ""
+          ).filter(Boolean)
+        });
+      }
+      console.log(`[DropshipTracker] Interceptor captured ${reviewList.length} reviews from ${url}`);
+    }
+    const productData = data?.data?.product || data?.result?.product || data?.productInfo || null;
+    if (productData) {
+      if (!contentState.interceptedProductData)
+        contentState.interceptedProductData = {};
+      Object.assign(contentState.interceptedProductData, productData);
+      console.log("[DropshipTracker] Interceptor captured product data from", url);
+    }
+  }
+  __name(handleInterceptedData, "handleInterceptedData");
+  function mergeInterceptedReviews(domReviews = []) {
+    const captured = contentState.interceptedReviews || [];
+    if (captured.length === 0)
+      return domReviews;
+    const seen = new Set(domReviews.map((r) => (r.text || "").substring(0, 60)));
+    const merged = [...domReviews];
+    for (const r of captured) {
+      const key = (r.text || "").substring(0, 60);
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(r);
+      }
+    }
+    return merged;
+  }
+  __name(mergeInterceptedReviews, "mergeInterceptedReviews");
+
   // src/content/productExtraction.js
+  function extractBalancedJSONAt(text, fromIndex) {
+    const start = text.indexOf("{", fromIndex);
+    if (start === -1)
+      return null;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === "\\" && inString) {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString)
+        continue;
+      if (ch === "{") {
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          return text.substring(start, i + 1);
+        }
+      }
+    }
+    return null;
+  }
+  __name(extractBalancedJSONAt, "extractBalancedJSONAt");
   function extractEmbeddedJSON(config) {
     const result = {};
     if (config && config.jsonPatterns) {
@@ -808,12 +972,15 @@
         for (const patternStr of config.jsonPatterns) {
           try {
             const regex = new RegExp(patternStr);
-            const match = text.match(regex);
-            if (match && match[1]) {
-              const jsonStr = match[1];
-              const data = JSON.parse(jsonStr);
-              mergeJSONProductData(result, data, config);
-            }
+            const match = regex.exec(text);
+            if (!match)
+              continue;
+            const searchFrom = match.index + match[0].length - 1;
+            const jsonStr = extractBalancedJSONAt(text, searchFrom);
+            if (!jsonStr)
+              continue;
+            const data = JSON.parse(jsonStr);
+            mergeJSONProductData(result, data, config);
           } catch (e) {
           }
         }
@@ -825,6 +992,22 @@
   function mergeJSONProductData(result, data, config) {
     if (!data || typeof data !== "object")
       return;
+    const propLookup = {};
+    const findPropList = /* @__PURE__ */ __name((obj) => obj?.productSKUPropertyList || obj?.data?.productSKUPropertyList || obj?.data?.product?.productSKUPropertyList || obj?.skuModule?.productSKUPropertyList || null, "findPropList");
+    let propList = findPropList(data);
+    if (Array.isArray(propList)) {
+      for (const group of propList) {
+        const groupName = group.skuPropertyName || "";
+        for (const val of group.skuPropertyValues || []) {
+          const key = `${group.skuPropertyId}:${val.propertyValueId}`;
+          propLookup[key] = {
+            group: groupName,
+            name: val.propertyValueDisplayName || val.propertyValueName || "",
+            image: val.skuPropertyImagePath || null
+          };
+        }
+      }
+    }
     const searchPaths = [
       data,
       data.data,
@@ -921,18 +1104,32 @@
         result.minOrder = obj.minOrder || obj.moq || obj.minOrderQuantity || null;
       }
       if ((!result.variants || result.variants.length === 0) && obj.skuPriceList) {
-        result.variants = obj.skuPriceList.map((sku) => ({
-          id: sku.skuId || sku.id,
-          price: sku.skuVal?.actSkuCalPrice || sku.skuVal?.skuCalPrice || sku.price,
-          stock: sku.skuVal?.availQuantity || sku.stock,
-          attributes: sku.skuAttr || sku.skuPropIds || ""
-        }));
+        result.variants = obj.skuPriceList.map((sku) => {
+          const attrDecoded = {};
+          const rawAttr = sku.skuAttr || sku.skuPropIds || "";
+          if (rawAttr && Object.keys(propLookup).length > 0) {
+            rawAttr.split(";").forEach((pair) => {
+              const entry = propLookup[pair.trim()];
+              if (entry) {
+                attrDecoded[entry.group] = entry.name;
+              }
+            });
+          }
+          return {
+            id: sku.skuId || sku.id,
+            price: sku.skuVal?.actSkuCalPrice || sku.skuVal?.skuCalPrice || sku.price,
+            stock: sku.skuVal?.availQuantity ?? sku.stock,
+            attributes: Object.keys(attrDecoded).length > 0 ? attrDecoded : rawAttr,
+            attributesRaw: rawAttr
+          };
+        });
       }
-      if ((!result.variants || result.variants.length === 0) && obj.productSKUPropertyList) {
+      if ((!result.variantGroups || result.variantGroups.length === 0) && obj.productSKUPropertyList) {
         result.variantGroups = obj.productSKUPropertyList.map((group) => ({
           name: group.skuPropertyName,
           values: (group.skuPropertyValues || []).map((v) => ({
             name: v.propertyValueDisplayName || v.propertyValueName,
+            id: v.propertyValueId,
             image: v.skuPropertyImagePath || null
           }))
         }));
@@ -1024,6 +1221,27 @@
           }
         }
       });
+    }
+    if (specs.length === 0) {
+      const containers = document.querySelectorAll(
+        'ul, ol, .product-specs, [class*="spec"], [class*="Spec"], [class*="attribute"], [class*="Attribute"], [class*="property"], [class*="Property"]'
+      );
+      for (const container of containers) {
+        for (const item of container.querySelectorAll("li, div, p")) {
+          const spans = item.querySelectorAll("span");
+          if (spans.length >= 2) {
+            const name = spans[0].textContent?.trim().replace(/:$/, "");
+            const value = spans[spans.length - 1].textContent?.trim();
+            const key = (name + ":" + value).toLowerCase();
+            if (name && value && name !== value && name.length > 1 && value.length > 0 && !seen.has(key)) {
+              seen.add(key);
+              specs.push({ name, value });
+            }
+          }
+        }
+        if (specs.length > 0)
+          break;
+      }
     }
     return specs;
   }
@@ -1548,7 +1766,7 @@
     }
     product.variantGroups = extractVariantGroups(config);
     product.variants = product.variantGroups.allVariants || [];
-    product.reviews = extractReviewsData(config);
+    product.reviews = mergeInterceptedReviews(extractReviewsData(config));
     if (!product.description) {
       const descSelectors = config?.descriptionSelectors || [
         '[class*="description"]',
@@ -1674,6 +1892,17 @@
         }
       }
     }
+    let _responseSent = false;
+    const safeCallback = /* @__PURE__ */ __name((data) => {
+      if (_responseSent)
+        return;
+      _responseSent = true;
+      try {
+        callback(data);
+      } catch (e) {
+        console.warn("[DropshipTracker] sendResponse already closed:", e.message);
+      }
+    }, "safeCallback");
     if (!product.title && !product.price && !product._retried) {
       product._retried = true;
       console.log("[DropshipTracker] Missing title+price \u2014 retrying in 2s (SPA hydration)");
@@ -1716,12 +1945,12 @@
             product.price = parsePriceText(priceEl.textContent);
         }
         delete product._retried;
-        callback(product);
+        safeCallback(product);
       }, 2e3);
       return;
     }
     delete product._retried;
-    callback(product);
+    safeCallback(product);
   }
   __name(extractProductDetails, "extractProductDetails");
 
@@ -2077,6 +2306,7 @@
     }
   }
   __name(saveCustomSelectors, "saveCustomSelectors");
+  installInterceptor();
   loadCustomSelectors();
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {

@@ -6,6 +6,7 @@
 
 import { contentState } from './contentState.js';
 import { getSiteConfig } from './siteConfigs.js';
+import { mergeInterceptedReviews } from './interceptor.js';
 import {
   extractProductId,
   normalizeImageUrl,
@@ -24,8 +25,56 @@ import {
 // ============================================
 
 /**
- * Extract product data from embedded JSON in page scripts
- * 85-95% more stable than CSS selectors since JSON structures rarely change
+ * Robustly extract a balanced JSON object from a script text starting at fromIndex.
+ * Handles nested objects, strings with escaped quotes, and avoids the regex
+ * non-greedy .*? trap that silently truncates nested objects.
+ *
+ * @param {string} text  - Full script text content
+ * @param {number} fromIndex - Start searching from this character index
+ * @returns {string|null} - The balanced JSON string or null
+ */
+function extractBalancedJSONAt(text, fromIndex) {
+  // Find the opening brace at or after fromIndex
+  const start = text.indexOf('{', fromIndex);
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return text.substring(start, i + 1);
+      }
+    }
+  }
+  return null; // Unbalanced — truncated script
+}
+
+/**
+ * Extract product data from embedded JSON in page scripts.
+ * Uses brace-counting (not regex capture) for reliable nested-object extraction.
+ * 85-95% more stable than CSS selectors since JSON structures rarely change.
  */
 export function extractEmbeddedJSON(config) {
   const result = {};
@@ -39,14 +88,19 @@ export function extractEmbeddedJSON(config) {
       for (const patternStr of config.jsonPatterns) {
         try {
           const regex = new RegExp(patternStr);
-          const match = text.match(regex);
-          if (match && match[1]) {
-            const jsonStr = match[1];
-            const data = JSON.parse(jsonStr);
-            mergeJSONProductData(result, data, config);
-          }
+          const match = regex.exec(text);
+          if (!match) continue;
+
+          // match.index + match[0].length - 1 points at the '{' in the pattern's match.
+          // If the pattern doesn't end in '{', search forward from the match end for the '{'.
+          const searchFrom = match.index + match[0].length - 1;
+          const jsonStr = extractBalancedJSONAt(text, searchFrom);
+          if (!jsonStr) continue;
+
+          const data = JSON.parse(jsonStr);
+          mergeJSONProductData(result, data, config);
         } catch(e) {
-          // JSON parse failures are expected for partial matches
+          // JSON parse failures (partial scripts, minified noise) are expected
         }
       }
     }
@@ -61,6 +115,30 @@ export function extractEmbeddedJSON(config) {
  */
 export function mergeJSONProductData(result, data, config) {
   if (!data || typeof data !== 'object') return;
+
+  // --- Build SKU prop lookup map from productSKUPropertyList before the loop ---
+  // AliExpress encodes variants as "propId:valueId;propId:valueId" strings.
+  // Pre-build a map: { "propId:valueId" -> "GroupName: ValueName" } so we can
+  // decode them when we encounter skuPriceList entries.
+  const propLookup = {};  // key: "propId:valueId", value: { group, name, image }
+  const findPropList = (obj) => obj?.productSKUPropertyList ||
+                                obj?.data?.productSKUPropertyList ||
+                                obj?.data?.product?.productSKUPropertyList ||
+                                obj?.skuModule?.productSKUPropertyList || null;
+  let propList = findPropList(data);
+  if (Array.isArray(propList)) {
+    for (const group of propList) {
+      const groupName = group.skuPropertyName || '';
+      for (const val of (group.skuPropertyValues || [])) {
+        const key = `${group.skuPropertyId}:${val.propertyValueId}`;
+        propLookup[key] = {
+          group: groupName,
+          name: val.propertyValueDisplayName || val.propertyValueName || '',
+          image: val.skuPropertyImagePath || null
+        };
+      }
+    }
+  }
 
   const searchPaths = [
     data,
@@ -196,18 +274,34 @@ export function mergeJSONProductData(result, data, config) {
 
     // Variants / SKU properties
     if ((!result.variants || result.variants.length === 0) && obj.skuPriceList) {
-      result.variants = obj.skuPriceList.map(sku => ({
-        id: sku.skuId || sku.id,
-        price: sku.skuVal?.actSkuCalPrice || sku.skuVal?.skuCalPrice || sku.price,
-        stock: sku.skuVal?.availQuantity || sku.stock,
-        attributes: sku.skuAttr || sku.skuPropIds || ''
-      }));
+      result.variants = obj.skuPriceList.map(sku => {
+        // Decode "propId:valueId;propId:valueId" into human-readable attributes.
+        // Falls back to the raw string if the lookup map isn't populated.
+        const attrDecoded = {};
+        const rawAttr = sku.skuAttr || sku.skuPropIds || '';
+        if (rawAttr && Object.keys(propLookup).length > 0) {
+          rawAttr.split(';').forEach(pair => {
+            const entry = propLookup[pair.trim()];
+            if (entry) {
+              attrDecoded[entry.group] = entry.name;
+            }
+          });
+        }
+        return {
+          id: sku.skuId || sku.id,
+          price: sku.skuVal?.actSkuCalPrice || sku.skuVal?.skuCalPrice || sku.price,
+          stock: sku.skuVal?.availQuantity ?? sku.stock,
+          attributes: Object.keys(attrDecoded).length > 0 ? attrDecoded : rawAttr,
+          attributesRaw: rawAttr
+        };
+      });
     }
-    if ((!result.variants || result.variants.length === 0) && obj.productSKUPropertyList) {
+    if ((!result.variantGroups || result.variantGroups.length === 0) && obj.productSKUPropertyList) {
       result.variantGroups = obj.productSKUPropertyList.map(group => ({
         name: group.skuPropertyName,
         values: (group.skuPropertyValues || []).map(v => ({
           name: v.propertyValueDisplayName || v.propertyValueName,
+          id: v.propertyValueId,
           image: v.skuPropertyImagePath || null
         }))
       }));
@@ -316,6 +410,31 @@ export function extractSpecifications(config) {
         }
       }
     });
+  }
+
+  // Fallback: Two consecutive <span> inside a list/table row — AliExpress renders specs
+  // as <li><span class="attr-name">Color</span><span class="attr-value">Red</span></li>
+  // and newer layouts use a pair of raw spans with no descriptive class names.
+  if (specs.length === 0) {
+    const containers = document.querySelectorAll(
+      'ul, ol, .product-specs, [class*="spec"], [class*="Spec"], [class*="attribute"], [class*="Attribute"], [class*="property"], [class*="Property"]'
+    );
+    for (const container of containers) {
+      for (const item of container.querySelectorAll('li, div, p')) {
+        const spans = item.querySelectorAll('span');
+        if (spans.length >= 2) {
+          // Only use exactly first two spans; ignore icon-only spans (< 2 chars)
+          const name = spans[0].textContent?.trim().replace(/:$/, '');
+          const value = spans[spans.length - 1].textContent?.trim();
+          const key = (name + ':' + value).toLowerCase();
+          if (name && value && name !== value && name.length > 1 && value.length > 0 && !seen.has(key)) {
+            seen.add(key);
+            specs.push({ name, value });
+          }
+        }
+      }
+      if (specs.length > 0) break;
+    }
   }
 
   return specs;
@@ -863,7 +982,8 @@ export function extractProductDetails(callback) {
   product.variants = product.variantGroups.allVariants || [];
 
   // === REVIEWS ===
-  product.reviews = extractReviewsData(config);
+  // Merge DOM-scraped reviews with any API responses captured by the interceptor
+  product.reviews = mergeInterceptedReviews(extractReviewsData(config));
 
   // === FULL DESCRIPTION (HTML) ===
   if (!product.description) {
@@ -1000,6 +1120,17 @@ export function extractProductDetails(callback) {
   }
 
   // === SPA RETRY ===
+  // Guard prevents double-callback if the message channel closes before the
+  // setTimeout fires and Chrome's sendResponse is already invalidated.
+  let _responseSent = false;
+  const safeCallback = (data) => {
+    if (_responseSent) return;
+    _responseSent = true;
+    try { callback(data); } catch (e) {
+      console.warn('[DropshipTracker] sendResponse already closed:', e.message);
+    }
+  };
+
   if (!product.title && !product.price && !product._retried) {
     product._retried = true;
     console.log('[DropshipTracker] Missing title+price — retrying in 2s (SPA hydration)');
@@ -1028,11 +1159,11 @@ export function extractProductDetails(callback) {
         if (priceEl) product.price = parsePriceText(priceEl.textContent);
       }
       delete product._retried;
-      callback(product);
+      safeCallback(product);
     }, 2000);
     return;
   }
 
   delete product._retried;
-  callback(product);
+  safeCallback(product);
 }
