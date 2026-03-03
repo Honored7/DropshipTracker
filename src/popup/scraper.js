@@ -14,6 +14,7 @@ import {
 import { saveScrapedData, clearScrapedSession, saveCustomSelectors, updateCustomSelectorsList } from './persistence.js';
 import { updateDataTable, updateExpandToggle } from './dataTable.js';
 import { showFieldMapping, EXPORT_FIELDS, autoDetectMapping } from './fieldMapping.js';
+import { isBackendAvailable, extractViaBackend, resetBackendCache } from './backendClient.js';
 
 // ============================================
 // SELECTOR PICKER
@@ -148,8 +149,55 @@ export function extractProduct() {
   setStatus('Extracting product details...');
   showLoading('Extracting product details...');
 
-  sendToContentScript({ action: 'extractProduct' }, (response) => {
-    if (response && (response.title || response.productId)) {
+  // Try Scrapling backend first; fall back to the in-page content script if
+  // the backend is not running or returns an error.
+  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+    const tabUrl = tabs?.[0]?.url ?? '';
+    let usedBackend = false;
+
+    try {
+      const backendUp = await isBackendAvailable();
+      if (backendUp && tabUrl) {
+        try {
+          const backendResponse = await extractViaBackend(tabUrl);
+          if (backendResponse && (backendResponse.title || backendResponse.productId)) {
+            usedBackend = true;
+            console.log('[DropshipTracker] Product extracted via Scrapling backend');
+            _handleExtractedProduct(backendResponse);
+            return;
+          }
+        } catch (backendErr) {
+          console.warn('[DropshipTracker] Backend extraction failed, falling back to content script:', backendErr.message);
+          // Reset cache so next call re-probes
+          resetBackendCache();
+        }
+      }
+    } catch (probeErr) {
+      console.warn('[DropshipTracker] Backend probe error:', probeErr.message);
+    }
+
+    // Fallback: in-page content script extraction
+    if (!usedBackend) {
+      sendToContentScript({ action: 'extractProduct' }, (response) => {
+        if (response && (response.title || response.productId)) {
+          _handleExtractedProduct(response);
+        } else {
+          setStatus('Could not extract product details');
+          showToast('No product data found. Make sure you\'re on a product page.', 'warning');
+          hideLoading();
+        }
+      });
+    }
+  });
+}
+
+/**
+ * Shared handler for extracted product data — works for both backend and
+ * content-script responses.  Matches the original extractProduct() flow.
+ *
+ * @param {object} response
+ */
+function _handleExtractedProduct(response) {
       const sanitized = typeof SanitizeService !== 'undefined'
         ? SanitizeService.sanitizeProduct(response)
         : response;
@@ -219,12 +267,6 @@ export function extractProduct() {
       showFieldMapping();
       saveScrapedData();
       hideLoading();
-    } else {
-      setStatus('Could not extract product details');
-      showToast('No product data found. Make sure you\'re on a product page.', 'warning');
-      hideLoading();
-    }
-  });
 }
 
 // ============================================
