@@ -1,0 +1,20 @@
+# DropshipTracker backend — Python dependencies
+# Install with: pip install -r requirements.txt
+# Then:         scrapling install   (downloads Playwright browsers + stealth deps)
+
+# ---- Core framework ----
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.6.0
+
+# ---- Scrapling (core + fetchers) ----
+# [fetchers] installs Playwright, camoufox, and fingerprint-spoofing deps.
+# [all] also adds the MCP server and interactive shell.
+scrapling[fetchers]>=0.4.0
+
+# ---- Async support ----
+anyio>=4.3.0
+httpx>=0.27.0        # Used by Scrapling internally; also handy for lightweight HTTP calls
+
+# ---- Utilities ----
+python-dotenv>=1.0.0 # Loads .env for local dev

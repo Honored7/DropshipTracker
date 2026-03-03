@@ -1452,6 +1452,139 @@ Continue?`)) {
     }
   });
 
+  // src/popup/backendClient.js
+  async function isBackendAvailable() {
+    const now = Date.now();
+    if (_backendAvailable !== null && now - _lastProbeTime < PROBE_TTL_MS) {
+      return _backendAvailable;
+    }
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+      const res = await fetch(`${BACKEND_BASE}/health`, {
+        method: "GET",
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      _backendAvailable = res.ok;
+      _lastProbeTime = now;
+      if (_backendAvailable) {
+        const data = await res.json().catch(() => ({}));
+        console.log(
+          `[DropshipTracker] Backend available \u2014 Scrapling ${data.scrapling_version ?? "unknown"}`
+        );
+      }
+      return _backendAvailable;
+    } catch {
+      _backendAvailable = false;
+      _lastProbeTime = now;
+      return false;
+    }
+  }
+  function resetBackendCache() {
+    _backendAvailable = null;
+    _lastProbeTime = 0;
+  }
+  async function extractViaBackend(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EXTRACT_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(`${BACKEND_BASE}/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) {
+      let detail = "";
+      try {
+        detail = (await res.json()).detail ?? "";
+      } catch {
+      }
+      throw new Error(`Backend /extract failed (${res.status}): ${detail}`);
+    }
+    const data = await res.json();
+    return _normaliseBackendProduct(data);
+  }
+  function _normaliseBackendProduct(p) {
+    return {
+      // Identity
+      productId: p.product_id ?? p.productId ?? "",
+      url: p.url ?? "",
+      domain: p.domain ?? _domainFromUrl(p.url),
+      // Text
+      title: p.title ?? "",
+      shortDescription: p.short_description ?? p.shortDescription ?? "",
+      description: p.description ?? "",
+      descriptionText: p.description ?? "",
+      fullDescription: p.full_description ?? p.description ?? "",
+      category: p.category ?? "",
+      brand: p.brand ?? "",
+      sku: p.sku ?? "",
+      metaKeywords: p.meta_keywords ?? p.metaKeywords ?? "",
+      metaDescription: p.meta_description ?? p.metaDescription ?? p.short_description ?? "",
+      // Pricing
+      price: p.price != null ? String(p.price) : "",
+      originalPrice: p.original_price != null ? String(p.original_price) : "",
+      currency: p.currency ?? "USD",
+      shippingCost: p.shipping_cost != null ? String(p.shipping_cost) : "",
+      shippingText: p.shipping_text ?? p.shippingText ?? "",
+      shipping: p.shipping_text ?? "",
+      minOrder: p.min_order ?? p.minOrder ?? "",
+      // Availability
+      stock: p.stock != null ? String(p.stock) : "",
+      availability: p.availability ?? "",
+      soldCount: p.sold_count != null ? String(p.sold_count) : "",
+      orders: p.sold_count != null ? String(p.sold_count) : "",
+      // Media
+      images: Array.isArray(p.images) ? p.images : [],
+      videoUrls: Array.isArray(p.video_urls) ? p.video_urls : [],
+      // Store
+      storeName: p.store_name ?? p.storeName ?? "",
+      storeRating: p.store_rating != null ? String(p.store_rating) : "",
+      // Ratings / reviews
+      rating: p.rating != null ? String(p.rating) : "",
+      reviewCount: p.review_count != null ? String(p.review_count) : "",
+      reviews: Array.isArray(p.reviews) ? p.reviews : [],
+      // Logistics
+      weight: p.weight ?? "",
+      // Rich product data
+      variants: Array.isArray(p.variants) ? p.variants : [],
+      variantGroups: Array.isArray(p.variant_groups) ? p.variant_groups : Array.isArray(p.variantGroups) ? p.variantGroups : [],
+      specifications: Array.isArray(p.specifications) ? p.specifications : [],
+      // Backend metadata
+      extractionMethod: p.extraction_method ?? "scrapling-backend",
+      _source: "backend"
+    };
+  }
+  function _domainFromUrl(url = "") {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  }
+  var BACKEND_BASE, HEALTH_TIMEOUT_MS, EXTRACT_TIMEOUT_MS, _backendAvailable, _lastProbeTime, PROBE_TTL_MS;
+  var init_backendClient = __esm({
+    "src/popup/backendClient.js"() {
+      BACKEND_BASE = "http://127.0.0.1:8000";
+      HEALTH_TIMEOUT_MS = 2e3;
+      EXTRACT_TIMEOUT_MS = 3e4;
+      _backendAvailable = null;
+      _lastProbeTime = 0;
+      PROBE_TTL_MS = 3e4;
+      __name(isBackendAvailable, "isBackendAvailable");
+      __name(resetBackendCache, "resetBackendCache");
+      __name(extractViaBackend, "extractViaBackend");
+      __name(_normaliseBackendProduct, "_normaliseBackendProduct");
+      __name(_domainFromUrl, "_domainFromUrl");
+    }
+  });
+
   // src/popup/scraper.js
   var scraper_exports = {};
   __export(scraper_exports, {
@@ -1578,74 +1711,102 @@ Continue?`)) {
   function extractProduct() {
     setStatus("Extracting product details...");
     showLoading("Extracting product details...");
-    sendToContentScript({ action: "extractProduct" }, (response) => {
-      if (response && (response.title || response.productId)) {
-        const sanitized = typeof SanitizeService !== "undefined" ? SanitizeService.sanitizeProduct(response) : response;
-        const row = {
-          "Product ID": sanitized.productId || "",
-          "Title": sanitized.title || "",
-          "Price": sanitized.price || "",
-          "Original Price": sanitized.originalPrice || "",
-          "Currency": sanitized.currency || "USD",
-          "Short Description": sanitized.shortDescription || "",
-          "Description": sanitized.descriptionText || sanitized.description || "",
-          "Full Description": sanitized.fullDescription || "",
-          "Category": sanitized.category || "",
-          "Images": (sanitized.images || []).join("|||"),
-          "URL": sanitized.url || "",
-          "Domain": sanitized.domain || "",
-          "Variants": JSON.stringify(sanitized.variants || []),
-          "Variant Groups": JSON.stringify(sanitized.variantGroups || []),
-          "Reviews": JSON.stringify(sanitized.reviews || []),
-          "Rating": sanitized.rating || "",
-          "Review Count": sanitized.reviewCount || "",
-          "Sold": sanitized.soldCount || sanitized.orders || "",
-          "Brand": sanitized.brand || "",
-          "SKU": sanitized.sku || "",
-          "Stock": sanitized.stock || "",
-          "Availability": sanitized.availability || "",
-          "Weight": sanitized.weight || "",
-          "Shipping": sanitized.shippingText || sanitized.shipping || "",
-          "Shipping Cost": sanitized.shippingCost || "",
-          "Store": sanitized.storeName || "",
-          "Store Rating": sanitized.storeRating || "",
-          "Min Order": sanitized.minOrder || "",
-          "Video URLs": (sanitized.videoUrls || []).join("|||"),
-          "Specifications": JSON.stringify(sanitized.specifications || []),
-          "Meta Keywords": sanitized.metaKeywords || "",
-          "Meta Description": sanitized.metaDescription || sanitized.shortDescription || ""
-        };
-        const existingIndex = state.rawData.findIndex(
-          (r) => r.productId && r.productId === response.productId || r.url && r.url === response.url
-        );
-        if (existingIndex >= 0) {
-          state.rawData[existingIndex] = { ...state.rawData[existingIndex], ...response };
-          state.data[existingIndex] = { ...state.data[existingIndex], ...row };
-          showToast(`Updated existing product: ${response.title?.substring(0, 40)}...`, "success");
-        } else {
-          state.rawData.push(response);
-          state.data.push(row);
-          showToast(`Added product: ${response.title?.substring(0, 40)}...`, "success");
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      const tabUrl = tabs?.[0]?.url ?? "";
+      let usedBackend = false;
+      try {
+        const backendUp = await isBackendAvailable();
+        if (backendUp && tabUrl) {
+          try {
+            const backendResponse = await extractViaBackend(tabUrl);
+            if (backendResponse && (backendResponse.title || backendResponse.productId)) {
+              usedBackend = true;
+              console.log("[DropshipTracker] Product extracted via Scrapling backend");
+              _handleExtractedProduct(backendResponse);
+              return;
+            }
+          } catch (backendErr) {
+            console.warn("[DropshipTracker] Backend extraction failed, falling back to content script:", backendErr.message);
+            resetBackendCache();
+          }
         }
-        Object.keys(row).forEach((key) => {
-          if (!state.fieldNames.includes(key)) {
-            state.fieldNames.push(key);
+      } catch (probeErr) {
+        console.warn("[DropshipTracker] Backend probe error:", probeErr.message);
+      }
+      if (!usedBackend) {
+        sendToContentScript({ action: "extractProduct" }, (response) => {
+          if (response && (response.title || response.productId)) {
+            _handleExtractedProduct(response);
+          } else {
+            setStatus("Could not extract product details");
+            showToast("No product data found. Make sure you're on a product page.", "warning");
+            hideLoading();
           }
         });
-        updateDataTable(state.data);
-        setStatus(`${state.data.length} products in scraper`);
-        updateRowCount(state.data.length);
-        $("#addToCatalogBtn").prop("disabled", false);
-        updateExportButtons();
-        showFieldMapping();
-        saveScrapedData();
-        hideLoading();
-      } else {
-        setStatus("Could not extract product details");
-        showToast("No product data found. Make sure you're on a product page.", "warning");
-        hideLoading();
       }
     });
+  }
+  function _handleExtractedProduct(response) {
+    const sanitized = typeof SanitizeService !== "undefined" ? SanitizeService.sanitizeProduct(response) : response;
+    const row = {
+      "Product ID": sanitized.productId || "",
+      "Title": sanitized.title || "",
+      "Price": sanitized.price || "",
+      "Original Price": sanitized.originalPrice || "",
+      "Currency": sanitized.currency || "USD",
+      "Short Description": sanitized.shortDescription || "",
+      "Description": sanitized.descriptionText || sanitized.description || "",
+      "Full Description": sanitized.fullDescription || "",
+      "Category": sanitized.category || "",
+      "Images": (sanitized.images || []).join("|||"),
+      "URL": sanitized.url || "",
+      "Domain": sanitized.domain || "",
+      "Variants": JSON.stringify(sanitized.variants || []),
+      "Variant Groups": JSON.stringify(sanitized.variantGroups || []),
+      "Reviews": JSON.stringify(sanitized.reviews || []),
+      "Rating": sanitized.rating || "",
+      "Review Count": sanitized.reviewCount || "",
+      "Sold": sanitized.soldCount || sanitized.orders || "",
+      "Brand": sanitized.brand || "",
+      "SKU": sanitized.sku || "",
+      "Stock": sanitized.stock || "",
+      "Availability": sanitized.availability || "",
+      "Weight": sanitized.weight || "",
+      "Shipping": sanitized.shippingText || sanitized.shipping || "",
+      "Shipping Cost": sanitized.shippingCost || "",
+      "Store": sanitized.storeName || "",
+      "Store Rating": sanitized.storeRating || "",
+      "Min Order": sanitized.minOrder || "",
+      "Video URLs": (sanitized.videoUrls || []).join("|||"),
+      "Specifications": JSON.stringify(sanitized.specifications || []),
+      "Meta Keywords": sanitized.metaKeywords || "",
+      "Meta Description": sanitized.metaDescription || sanitized.shortDescription || ""
+    };
+    const existingIndex = state.rawData.findIndex(
+      (r) => r.productId && r.productId === response.productId || r.url && r.url === response.url
+    );
+    if (existingIndex >= 0) {
+      state.rawData[existingIndex] = { ...state.rawData[existingIndex], ...response };
+      state.data[existingIndex] = { ...state.data[existingIndex], ...row };
+      showToast(`Updated existing product: ${response.title?.substring(0, 40)}...`, "success");
+    } else {
+      state.rawData.push(response);
+      state.data.push(row);
+      showToast(`Added product: ${response.title?.substring(0, 40)}...`, "success");
+    }
+    Object.keys(row).forEach((key) => {
+      if (!state.fieldNames.includes(key)) {
+        state.fieldNames.push(key);
+      }
+    });
+    updateDataTable(state.data);
+    setStatus(`${state.data.length} products in scraper`);
+    updateRowCount(state.data.length);
+    $("#addToCatalogBtn").prop("disabled", false);
+    updateExportButtons();
+    showFieldMapping();
+    saveScrapedData();
+    hideLoading();
   }
   function processScrapedData(rawData) {
     console.log("[DropshipTracker] Processing scraped data:", rawData.length, "rows");
@@ -1987,12 +2148,14 @@ Continue?`)) {
       init_persistence();
       init_dataTable();
       init_fieldMapping();
+      init_backendClient();
       __name(handleSelectorPickerResult, "handleSelectorPickerResult");
       __name(startPickSelector, "startPickSelector");
       __name(findTables, "findTables");
       __name(nextTable, "nextTable");
       __name(getTableData, "getTableData");
       __name(extractProduct, "extractProduct");
+      __name(_handleExtractedProduct, "_handleExtractedProduct");
       __name(processScrapedData, "processScrapedData");
       __name(locateNextButton, "locateNextButton");
       __name(startCrawl, "startCrawl");
