@@ -102,11 +102,15 @@ export const SITE_CONFIGS = {
       '[class*="video"] video',
       '[class*="Video"] source'
     ],
+    // Patterns locate the START of the JSON object; brace-counting finishes extraction.
+    // window.runParams is AliExpress's primary product data container (added 2024+).
     jsonPatterns: [
-      '_initData\\s*=\\s*(\\{[\\s\\S]*?\\})\\s*;',
-      '__INITIAL_STATE__\\s*=\\s*(\\{[\\s\\S]*?\\});',
-      'window\\.__state__\\s*=\\s*(\\{[\\s\\S]*?\\});',
-      'data:\\s*(\\{[\\s\\S]*?"offers"[\\s\\S]*?\\})'
+      'window\\.runParams\\s*[=,]\\s*\\{',
+      'window\\.__runParams__\\s*=\\s*\\{',
+      '_initData\\s*=\\s*\\{',
+      '__INITIAL_STATE__\\s*=\\s*\\{',
+      'window\\.__state__\\s*=\\s*\\{',
+      '"offers"\\s*:\\s*\\{'
     ]
   },
   'alibaba.com': {
@@ -182,10 +186,11 @@ export const SITE_CONFIGS = {
       'video source',
       'iframe[src*="video"]'
     ],
+    // Patterns locate the START of the JSON object; brace-counting finishes extraction.
     jsonPatterns: [
-      '__INITIAL_STATE__\\s*=\\s*(\\{[\\s\\S]*?\\});?',
-      'window\\.__data__\\s*=\\s*(\\{[\\s\\S]*?\\});?',
-      '_init_data_\\s*=\\s*(\\{[\\s\\S]*?\\})'
+      '__INITIAL_STATE__\\s*=\\s*\\{',
+      'window\\.__data__\\s*=\\s*\\{',
+      '_init_data_\\s*=\\s*\\{'
     ]
   }
 };

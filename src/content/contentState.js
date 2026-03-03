@@ -9,5 +9,8 @@ export const contentState = {
   customSelectors: {},
   selectorPickerActive: false,
   selectorPickerCallback: null,
-  selectorPickerField: null
+  selectorPickerField: null,
+  // Populated by the XHR/fetch interceptor (interceptor.js)
+  interceptedReviews: [],
+  interceptedProductData: null
 };

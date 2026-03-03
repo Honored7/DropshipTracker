@@ -15,6 +15,7 @@ import {
   extractWithCustomSelector,
   extractAllWithSelector
 } from './selectorPicker.js';
+import { installInterceptor } from './interceptor.js';
 
 // ============================================
 // CUSTOM SELECTORS PERSISTENCE
@@ -48,6 +49,9 @@ function saveCustomSelectors(callback) {
 // ============================================
 // INIT
 // ============================================
+
+// Install XHR/fetch interceptor ASAP so it catches early API calls
+installInterceptor();
 
 // Load custom selectors on init
 loadCustomSelectors();
