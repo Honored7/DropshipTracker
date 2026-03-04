@@ -45,7 +45,7 @@
   },
   
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'unsafe-eval'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'sha256-wU69YSS4ukvyxK3Ing/VVNKmvvVRFq5blHbZfgAjWcM='; object-src 'self'"
   },
 
   "content_scripts": [
