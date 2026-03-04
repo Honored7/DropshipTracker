@@ -30,6 +30,10 @@ $(document).ready(function() {
 
   state.tabUrl = decodeURIComponent(params.get('url') || '');
 
+  // Detect restricted schemes where content scripts cannot be injected
+  const RESTRICTED_SCHEMES = /^(chrome:|chrome-extension:|about:|data:|view-source:|devtools:|edge:|brave:|moz-extension:|javascript:)/i;
+  state.tabRestricted = !state.tabUrl || RESTRICTED_SCHEMES.test(state.tabUrl);
+
   try {
     state.tabDomain = new URL(state.tabUrl).hostname;
   } catch(e) {
@@ -49,6 +53,13 @@ $(document).ready(function() {
   checkDriveAuth();
   _checkBackend();
   setInterval(_checkBackend, 30000);
+
+  // Show restricted-page banner and disable scraper buttons if needed
+  if (state.tabRestricted) {
+    $('#restrictedBanner').show();
+    $('#findTablesBtn, #extractProductBtn, #updateCatalogBtn, #locateNextBtn, #crawlBtn, #stopCrawlBtn, #testScrapeBtn').prop('disabled', true);
+    setStatus('Open a product/listing page to use the scraper.');
+  }
 
   // Listen for messages from content script
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

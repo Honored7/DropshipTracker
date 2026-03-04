@@ -21,6 +21,8 @@
         tabId: null,
         tabUrl: null,
         tabDomain: null,
+        tabRestricted: false,
+        // true for chrome://, about:, devtools://, etc.
         // Scraper state
         data: [],
         rawData: [],
@@ -55,9 +57,12 @@
 
   // src/popup/utils.js
   function sendToContentScript(message, callback) {
+    if (state.tabRestricted) {
+      callback({ error: "restricted_page" });
+      return;
+    }
     if (!state.tabId || typeof state.tabId !== "number") {
-      console.error("[DropshipTracker] No valid tab ID");
-      showToast("Cannot communicate with page. Refresh and reopen extension.", "danger");
+      console.warn("[DropshipTracker] No valid tab ID");
       callback({ error: "No valid tab ID" });
       return;
     }
@@ -66,6 +71,10 @@
         const errorMsg = chrome.runtime.lastError.message || "Unknown error";
         console.error("[DropshipTracker] Message error:", errorMsg);
         if (errorMsg.includes("Receiving end does not exist") || errorMsg.includes("Could not establish connection")) {
+          if (state.tabRestricted) {
+            callback({ error: "restricted_page" });
+            return;
+          }
           console.log("[DropshipTracker] Attempting to inject content script...");
           injectContentScript(() => {
             setTimeout(() => {
@@ -88,6 +97,11 @@
     });
   }
   function injectContentScript(callback) {
+    if (state.tabRestricted) {
+      console.warn("[DropshipTracker] injectContentScript: tab is restricted, skipping");
+      callback && callback();
+      return;
+    }
     chrome.tabs.sendMessage(state.tabId, { action: "ping" }, (response) => {
       if (!chrome.runtime.lastError && response && response.pong) {
         console.log("[DropshipTracker] Content script already loaded, skipping injection");
@@ -122,7 +136,7 @@
   function hideLoading() {
     $("#loadingOverlay").hide();
   }
-  function setStatus(text) {
+  function setStatus2(text) {
     $("#statusText").text(text);
   }
   function updateRowCount(count) {
@@ -307,7 +321,7 @@
       __name(injectContentScript, "injectContentScript");
       __name(showLoading, "showLoading");
       __name(hideLoading, "hideLoading");
-      __name(setStatus, "setStatus");
+      __name(setStatus2, "setStatus");
       __name(updateRowCount, "updateRowCount");
       __name(updatePageCount, "updatePageCount");
       __name(updateExportButtons, "updateExportButtons");
@@ -902,7 +916,7 @@
     });
   }
   function updateCatalogFromPage() {
-    setStatus("Extracting product to update catalog...");
+    setStatus2("Extracting product to update catalog...");
     const _doExtract = /* @__PURE__ */ __name(async () => {
       try {
         const up = await isBackendAvailable();
@@ -932,7 +946,7 @@
   }
   function _processUpdateResponse(response) {
     if (!response || !response.productId && !response.title) {
-      setStatus("Could not extract product data");
+      setStatus2("Could not extract product data");
       showToast("No product data found. Make sure you're on a product page.", "error");
       return;
     }
@@ -959,7 +973,7 @@ Use "Extract Product" to add as new.`, "warning");
       } else {
         showToast('Product not found in catalog. Use "Extract Product" to add it as new.', "warning");
       }
-      setStatus("Product not in catalog");
+      setStatus2("Product not in catalog");
       return;
     }
     const updates = {
@@ -984,11 +998,11 @@ Use "Extract Product" to add as new.`, "warning");
     }, (result) => {
       if (result?.success) {
         showToast(`\u2713 Updated "${matchedProduct.title?.substring(0, 40)}..." with fresh data`, "success");
-        setStatus(`Catalog item updated: ${response.images?.length || 0} images, ${response.variants?.length || 0} variants, ${response.reviews?.length || 0} reviews`);
+        setStatus2(`Catalog item updated: ${response.images?.length || 0} images, ${response.variants?.length || 0} variants, ${response.reviews?.length || 0} reviews`);
         loadCatalog();
       } else {
         showToast("Failed to update catalog item: " + (result?.error || "Unknown error"), "error");
-        setStatus("Update failed");
+        setStatus2("Update failed");
       }
     });
   }
@@ -1026,7 +1040,7 @@ Use "Extract Product" to add as new.`, "warning");
     isBackendAvailable().then(async (backendUp) => {
       if (backendUp) {
         try {
-          setStatus(`Scraping via backend: ${product.title?.substring(0, 35)}...`);
+          setStatus2(`Scraping via backend: ${product.title?.substring(0, 35)}...`);
           const response = await extractViaBackend(productUrl);
           if (response && (response.title || response.productId)) {
             _applyScrapedUpdates(response, product, rowIndex, done);
@@ -1042,7 +1056,7 @@ Use "Extract Product" to add as new.`, "warning");
   }
   function _scrapeViaTab(productUrl, product, rowIndex, done) {
     const ERROR_PAGE_PATTERNS = /^(HTTP\s*Status\s*\d|4\d{2}\s|5\d{2}\s|Access\s*Denied|Forbidden|Not\s*Found|Bad\s*Request|Service\s*Unavailable|Error|Page\s*Not\s*Found|Server\s*Error|Unauthorized)/i;
-    setStatus(`Opening product page for scraping: ${product.title?.substring(0, 40)}...`);
+    setStatus2(`Opening product page for scraping: ${product.title?.substring(0, 40)}...`);
     chrome.tabs.create({ url: productUrl, active: false }, (tab) => {
       if (chrome.runtime.lastError || !tab) {
         showToast("Failed to open product page", "error");
@@ -1076,7 +1090,7 @@ Use "Extract Product" to add as new.`, "warning");
             clearInterval(checkInterval);
             if (tabInfo.title && ERROR_PAGE_PATTERNS.test(tabInfo.title.trim())) {
               showToast(`\u26A0 Skipped "${product.title?.substring(0, 25) || "product"}" \u2014 page returned: ${tabInfo.title.substring(0, 50)}. Check the product URL.`, "warning");
-              setStatus("Product page error \u2014 URL may be invalid or expired");
+              setStatus2("Product page error \u2014 URL may be invalid or expired");
               finish(tabId);
               return;
             }
@@ -1093,7 +1107,7 @@ Use "Extract Product" to add as new.`, "warning");
                 const isErrorPage = ERROR_PAGE_PATTERNS.test(title.trim());
                 if (isErrorPage) {
                   showToast(`\u26A0 Error page detected for: ${product.title?.substring(0, 30)}...`, "warning");
-                  setStatus("Error page \u2014 product not updated");
+                  setStatus2("Error page \u2014 product not updated");
                   finish(tabId);
                   return;
                 }
@@ -1112,7 +1126,7 @@ Use "Extract Product" to add as new.`, "warning");
         if (!completed) {
           clearInterval(checkInterval);
           showToast("Product scraping timed out after 30s", "warning");
-          setStatus("Scraping timed out");
+          setStatus2("Scraping timed out");
           finish(tabId);
         }
       }, 3e4);
@@ -1172,7 +1186,7 @@ Use "Extract Product" to add as new.`, "warning");
         Object.assign(state.catalog[rowIndex], updates);
         refreshCatalogTable();
         showToast(`\u2713 Scraped: ${sanitized.title?.substring(0, 30) || product.title?.substring(0, 30)}...`, "success");
-        setStatus(`Updated \u2014 ${sanitized._source === "backend" ? "via Scrapling backend" : "via content script"}`);
+        setStatus2(`Updated \u2014 ${sanitized._source === "backend" ? "via Scrapling backend" : "via content script"}`);
       } else {
         showToast("Failed to save scraped details", "warning");
       }
@@ -1194,16 +1208,16 @@ Continue?`)) {
       }
     }
     showToast(`Scraping ${selected.length} products sequentially...`, "info");
-    setStatus(`Scraping 0/${selected.length} products...`);
+    setStatus2(`Scraping 0/${selected.length} products...`);
     let currentIndex = 0;
     function scrapeNext() {
       if (currentIndex >= selected.length) {
-        setStatus(`Completed scraping ${selected.length} products`);
+        setStatus2(`Completed scraping ${selected.length} products`);
         showToast(`\u2713 Finished scraping ${selected.length} products`, "success");
         return;
       }
       const rowIndex = selected[currentIndex];
-      setStatus(`Scraping ${currentIndex + 1}/${selected.length}: ${state.catalog[rowIndex]?.title?.substring(0, 30)}...`);
+      setStatus2(`Scraping ${currentIndex + 1}/${selected.length}: ${state.catalog[rowIndex]?.title?.substring(0, 30)}...`);
       currentIndex++;
       scrapeProductDetails(rowIndex, () => {
         setTimeout(scrapeNext, 3e3);
@@ -1761,16 +1775,16 @@ Continue?`)) {
     $("#pickSelectorModal").modal("show");
   }
   function findTables() {
-    setStatus("Scanning page for data tables...");
+    setStatus2("Scanning page for data tables...");
     sendToContentScript({ action: "findTables" }, (response) => {
       if (response && response.tableCount > 0) {
-        setStatus(`Found ${response.tableCount} potential data tables`);
+        setStatus2(`Found ${response.tableCount} potential data tables`);
         $("#tableCounter").text(`1/${response.tableCount}`);
         $("#nextTableBtn").prop("disabled", response.tableCount <= 1);
         state.tableSelector = response.selector;
         getTableData();
       } else {
-        setStatus("No data tables found on this page");
+        setStatus2("No data tables found on this page");
         showToast("No tables found. Try a different page or use Extract Product for single items.", "warning");
       }
     });
@@ -1785,23 +1799,23 @@ Continue?`)) {
     });
   }
   function getTableData() {
-    setStatus("Extracting data...");
+    setStatus2("Extracting data...");
     sendToContentScript({ action: "getTableData", selector: state.tableSelector }, (response) => {
       if (response && response.data && response.data.length > 0) {
         processScrapedData(response.data);
-        setStatus(`Extracted ${response.data.length} rows`);
+        setStatus2(`Extracted ${response.data.length} rows`);
         updateRowCount(response.data.length);
         $("#crawlBtn").prop("disabled", false);
         $("#addToCatalogBtn").prop("disabled", false);
         updateExportButtons();
         showFieldMapping();
       } else {
-        setStatus("No data extracted from table");
+        setStatus2("No data extracted from table");
       }
     });
   }
   function extractProduct() {
-    setStatus("Extracting product details...");
+    setStatus2("Extracting product details...");
     showLoading("Extracting product details...");
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       const tabUrl = tabs?.[0]?.url ?? "";
@@ -1830,7 +1844,7 @@ Continue?`)) {
           if (response && (response.title || response.productId)) {
             _handleExtractedProduct(response);
           } else {
-            setStatus("Could not extract product details");
+            setStatus2("Could not extract product details");
             showToast("No product data found. Make sure you're on a product page.", "warning");
             hideLoading();
           }
@@ -1894,7 +1908,7 @@ Continue?`)) {
     });
     _renderProductPanel(sanitized, _ppIndex, state.rawData.length);
     _enterProductMode();
-    setStatus(`${state.rawData.length} product${state.rawData.length === 1 ? "" : "s"} extracted`);
+    setStatus2(`${state.rawData.length} product${state.rawData.length === 1 ? "" : "s"} extracted`);
     updateRowCount(state.rawData.length);
     $("#addToCatalogBtn").prop("disabled", false);
     updateExportButtons();
@@ -2146,14 +2160,14 @@ Continue?`)) {
     saveScrapedData();
   }
   function locateNextButton() {
-    setStatus('Click on the "Next" button on the page...');
+    setStatus2('Click on the "Next" button on the page...');
     showToast('Click on the pagination "Next" button on the page', "info");
     sendToContentScript({ action: "selectNextButton" }, (response) => {
       if (response && response.selector) {
         state.nextSelector = response.selector;
         $("#nextSelectorInput").val(response.selector);
         $("#crawlBtn").prop("disabled", false);
-        setStatus("Next button located");
+        setStatus2("Next button located");
         showToast('Next button selected! Click "Crawl" to start pagination.', "success");
       }
     });
@@ -2169,7 +2183,7 @@ Continue?`)) {
     $("#crawlBtn").prop("disabled", true);
     $("#stopCrawlBtn").prop("disabled", false);
     $("#findTablesBtn").prop("disabled", true);
-    setStatus("Crawling... Page 1");
+    setStatus2("Crawling... Page 1");
     crawlNextPage();
   }
   function crawlNextPage() {
@@ -2180,7 +2194,7 @@ Continue?`)) {
         const hashes = state.visitedHashes;
         const h = hashResponse.hash;
         if (hashes.length >= 1 && hashes[hashes.length - 1] === h || hashes.length >= 2 && hashes[hashes.length - 2] === h) {
-          setStatus("Reached end (duplicate page detected)");
+          setStatus2("Reached end (duplicate page detected)");
           stopCrawl();
           return;
         }
@@ -2198,10 +2212,10 @@ Continue?`)) {
             sendToContentScript({ action: "clickNext", selector: state.nextSelector }, (clickResponse) => {
               if (clickResponse && clickResponse.success) {
                 state.pages++;
-                setStatus(`Crawling... Page ${state.pages}`);
+                setStatus2(`Crawling... Page ${state.pages}`);
                 done();
               } else {
-                setStatus("Reached end (no more pages)");
+                setStatus2("Reached end (no more pages)");
                 stopCrawl();
               }
             });
@@ -2218,7 +2232,7 @@ Continue?`)) {
     $("#crawlBtn").prop("disabled", false);
     $("#stopCrawlBtn").prop("disabled", true);
     $("#findTablesBtn").prop("disabled", false);
-    setStatus(`Crawl complete. ${state.rawData.length} rows from ${state.pages} pages.`);
+    setStatus2(`Crawl complete. ${state.rawData.length} rows from ${state.pages} pages.`);
     showToast(`Scraped ${state.rawData.length} items from ${state.pages} pages`, "success");
   }
   function waitForNetworkIdle(actionFn, callback) {
@@ -2422,7 +2436,7 @@ Continue?`)) {
     enterTableMode();
     clearScrapedSession();
     showToast("All scraped data cleared", "success");
-    setStatus('Ready. Click "Find Tables" to detect data on page, or "Extract Product" on a product page.');
+    setStatus2('Ready. Click "Find Tables" to detect data on page, or "Extract Product" on a product page.');
   }
   var _ppIndex;
   var init_scraper = __esm({
@@ -2686,7 +2700,7 @@ Continue?`)) {
               updateExportButtons();
               if (state.data.length > 0) {
                 showFieldMapping();
-                setStatus(`Restored ${state.data.length} scraped items from previous session`);
+                setStatus2(`Restored ${state.data.length} scraped items from previous session`);
                 showToast(`Restored ${state.data.length} items`, "info");
               }
             }
@@ -2994,14 +3008,14 @@ Continue?`)) {
     const products = mapToCSCart(state.data, state.rawData);
     const xml = CSCartXMLBuilder.build(products, state.settings);
     const filename = `products-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.xml`;
-    setStatus("Uploading to Google Drive...");
+    setStatus2("Uploading to Google Drive...");
     GoogleDriveService.uploadFile(xml, filename, "application/xml").then((result) => {
       showToast("Uploaded to Google Drive", "success");
-      setStatus("Upload complete");
+      setStatus2("Upload complete");
       updateSyncTime();
     }).catch((err) => {
       showToast("Upload failed: " + err.message, "error");
-      setStatus("Upload failed");
+      setStatus2("Upload failed");
     });
   }
   __name(uploadToDrive, "uploadToDrive");
@@ -3013,14 +3027,14 @@ Continue?`)) {
     const products = state.catalog.map((p) => CSCartMapper.fromCatalog(p, state.settings));
     const xml = CSCartXMLBuilder.build(products, state.settings);
     const filename = `catalog-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.xml`;
-    setStatus("Syncing catalog to Google Drive...");
+    setStatus2("Syncing catalog to Google Drive...");
     GoogleDriveService.uploadFile(xml, filename, "application/xml").then((result) => {
       showToast("Catalog synced to Google Drive", "success");
-      setStatus("Sync complete");
+      setStatus2("Sync complete");
       updateSyncTime();
     }).catch((err) => {
       showToast("Sync failed: " + err.message, "error");
-      setStatus("Sync failed");
+      setStatus2("Sync failed");
     });
   }
   __name(syncCatalogToDrive, "syncCatalogToDrive");
@@ -3313,6 +3327,8 @@ Continue?`)) {
     if (isNaN(state.tabId))
       state.tabId = null;
     state.tabUrl = decodeURIComponent(params.get("url") || "");
+    const RESTRICTED_SCHEMES = /^(chrome:|chrome-extension:|about:|data:|view-source:|devtools:|edge:|brave:|moz-extension:|javascript:)/i;
+    state.tabRestricted = !state.tabUrl || RESTRICTED_SCHEMES.test(state.tabUrl);
     try {
       state.tabDomain = new URL(state.tabUrl).hostname;
     } catch (e) {
@@ -3330,6 +3346,11 @@ Continue?`)) {
     checkDriveAuth();
     _checkBackend();
     setInterval(_checkBackend, 3e4);
+    if (state.tabRestricted) {
+      $("#restrictedBanner").show();
+      $("#findTablesBtn, #extractProductBtn, #updateCatalogBtn, #locateNextBtn, #crawlBtn, #stopCrawlBtn, #testScrapeBtn").prop("disabled", true);
+      setStatus("Open a product/listing page to use the scraper.");
+    }
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.action === "selectorPickerResult") {
         handleSelectorPickerResult(message);

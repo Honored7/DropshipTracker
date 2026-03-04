@@ -10,6 +10,7 @@ export const state = {
   tabId: null,
   tabUrl: null,
   tabDomain: null,
+  tabRestricted: false,   // true for chrome://, about:, devtools://, etc.
 
   // Scraper state
   data: [],

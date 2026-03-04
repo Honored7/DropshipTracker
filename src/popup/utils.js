@@ -6,9 +6,15 @@
 import { state } from './state.js';
 
 export function sendToContentScript(message, callback) {
+  // Restricted pages (chrome://, about:, devtools://, etc.) cannot receive
+  // content script messages — fail silently so no toast/error is shown.
+  if (state.tabRestricted) {
+    callback({ error: 'restricted_page' });
+    return;
+  }
+
   if (!state.tabId || typeof state.tabId !== 'number') {
-    console.error('[DropshipTracker] No valid tab ID');
-    showToast('Cannot communicate with page. Refresh and reopen extension.', 'danger');
+    console.warn('[DropshipTracker] No valid tab ID');
     callback({ error: 'No valid tab ID' });
     return;
   }
@@ -20,6 +26,11 @@ export function sendToContentScript(message, callback) {
 
       // Try to inject content script if it doesn't exist
       if (errorMsg.includes('Receiving end does not exist') || errorMsg.includes('Could not establish connection')) {
+        // If the tab URL is a restricted scheme, don't bother trying to inject
+        if (state.tabRestricted) {
+          callback({ error: 'restricted_page' });
+          return;
+        }
         console.log('[DropshipTracker] Attempting to inject content script...');
         injectContentScript(() => {
           // Retry the message after injection
@@ -47,6 +58,11 @@ export function sendToContentScript(message, callback) {
  * Programmatically inject content script into the current tab
  */
 export function injectContentScript(callback) {
+  if (state.tabRestricted) {
+    console.warn('[DropshipTracker] injectContentScript: tab is restricted, skipping');
+    callback && callback();
+    return;
+  }
   // Ping first to avoid double-injection
   chrome.tabs.sendMessage(state.tabId, { action: 'ping' }, (response) => {
     if (!chrome.runtime.lastError && response && response.pong) {

@@ -150,6 +150,18 @@
           </div>
         </div>
 
+        <!-- Restricted-page banner — shown when popup opens on chrome://, about:, etc. -->
+        <div id="restrictedBanner" style="display:none;" class="row">
+          <div class="col-xs-12">
+            <div class="alert alert-warning restricted-banner" style="margin:10px 0 4px;">
+              <span class="glyphicon glyphicon-warning-sign"></span>
+              <strong>Scraper unavailable on this page.</strong>
+              Chrome doesn't allow extensions to run on <code>chrome://</code>, <code>about:</code>, or browser system pages.
+              <br>Navigate to a <strong>product page</strong> or <strong>product listing</strong> and reopen the extension.
+            </div>
+          </div>
+        </div>
+
         <!-- Data Preview (Handsontable) — TABLE MODE -->
         <div id="tableModeView">
           <div class="row">
