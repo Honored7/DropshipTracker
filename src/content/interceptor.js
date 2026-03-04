@@ -13,113 +13,28 @@
 import { contentState } from './contentState.js';
 
 // -----------------------------------------------------------------------
-// URL patterns that carry review / product data we want to capture
-// Add more patterns here as new endpoints are discovered.
+// Content-script side: listen for events from the MAIN-world interceptor
 // -----------------------------------------------------------------------
-const CAPTURE_PATTERNS = [
-  /\/feedback\/(\d+)\//,              // AliExpress review endpoint
-  /\/call_action\/getProductDetail/,  // AliExpress product detail API
-  /\/review\/list/,                   // Generic review list
-  /\/reviews\.json/,                  // Various shops
-  /\/product\/review/i,
-  /ae-feedback\.aliexpress\.com/,
-  /\/search\/feedback\.htm/,
-  /\/feedback\.do/,
-];
+// The actual XHR/Fetch interception runs in page-interceptor.js (declared in
+// manifest.json with "world": "MAIN", "run_at": "document_start").
+// That script dispatches CustomEvents; the listener below receives them.
 
-// -----------------------------------------------------------------------
-// Page-level interceptor (stringified and injected as a <script> tag)
-// It CANNOT reference any variable from this module's closure.
-// -----------------------------------------------------------------------
-function pageInterceptorCode() {
-  const EVENT_NAME = '__dropship_intercepted__';
-
-  const PATTERNS = [
-    /\/feedback\/(\d+)\//,
-    /\/call_action\/getProductDetail/,
-    /\/review\/list/,
-    /\/reviews\.json/,
-    /\/product\/review/i,
-    /ae-feedback\.aliexpress\.com/,
-    /\/search\/feedback\.htm/,
-    /\/feedback\.do/,
-  ];
-
-  function shouldCapture(url) {
-    return PATTERNS.some(p => p.test(url));
-  }
-
-  function dispatch(url, data) {
-    window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { url, data } }));
-  }
-
-  // ---- Intercept XHR ----
-  const OrigXHR = window.XMLHttpRequest;
-  window.XMLHttpRequest = function () {
-    const xhr = new OrigXHR(...arguments);
-    let _url = '';
-
-    const origOpen = xhr.open.bind(xhr);
-    xhr.open = function (method, url, ...rest) {
-      _url = url || '';
-      return origOpen(method, url, ...rest);
-    };
-
-    xhr.addEventListener('load', function () {
-      try {
-        if (shouldCapture(_url) && xhr.responseText) {
-          const json = JSON.parse(xhr.responseText);
-          dispatch(_url, json);
-        }
-      } catch (_) { /* ignore non-JSON */ }
-    });
-
-    return xhr;
-  };
-
-  // Preserve static properties (e.g. DONE, LOADING constants)
-  Object.assign(window.XMLHttpRequest, OrigXHR);
-
-  // ---- Intercept Fetch ----
-  const origFetch = window.fetch;
-  window.fetch = function (input, init) {
-    const url = typeof input === 'string' ? input : (input?.url || '');
-    return origFetch.call(this, input, init).then(response => {
-      if (shouldCapture(url)) {
-        response.clone().json().then(json => {
-          dispatch(url, json);
-        }).catch(() => { /* not JSON */ });
-      }
-      return response;
-    });
-  };
-}
-
-// -----------------------------------------------------------------------
-// Content-script side: inject & listen
-// -----------------------------------------------------------------------
-
-/** Install the page-level interceptor and start listening for captured data. */
+/** Install the page-level interceptor and start listening for captured data.
+ *
+ * The actual XHR/fetch overriding happens in page-interceptor.js which is
+ * declared in manifest.json as a "world": "MAIN" content script running at
+ * document_start. This function only needs to set up the CustomEvent listener
+ * in the isolated-world content script.
+ */
 export function installInterceptor() {
-  // Inject the interceptor into the page's execution context
-  try {
-    const scriptEl = document.createElement('script');
-    scriptEl.textContent = `(${pageInterceptorCode.toString()})();`;
-    (document.head || document.documentElement).prepend(scriptEl);
-    scriptEl.remove(); // The code runs immediately; the element is no longer needed
-  } catch (e) {
-    console.warn('[DropshipTracker] Could not inject interceptor:', e.message);
-    return;
-  }
-
-  // Listen for events dispatched by the injected script
+  // Listen for events dispatched by the MAIN-world page-interceptor.js
   window.addEventListener('__dropship_intercepted__', (event) => {
     const { url, data } = event.detail || {};
     if (!url || !data) return;
     handleInterceptedData(url, data);
   });
 
-  console.log('[DropshipTracker] XHR/Fetch interceptor installed');
+  console.log('[DropshipTracker] XHR/Fetch interceptor listener installed');
 }
 
 /**

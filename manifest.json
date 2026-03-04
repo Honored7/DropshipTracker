@@ -44,7 +44,17 @@
     }
   },
   
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'unsafe-eval'; object-src 'self'"
+  },
+
   "content_scripts": [
+    {
+      "matches": ["*://www.aliexpress.com/*", "*://www.aliexpress.us/*", "*://www.alibaba.com/*"],
+      "js": ["page-interceptor.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
     {
       "matches": ["*://*/*"],
       "js": ["js/jquery-3.1.1.min.js", "js/sha256.min.js", "onload.js"],
@@ -55,7 +65,7 @@
   
   "web_accessible_resources": [
     {
-      "resources": ["popup.html", "css/*", "js/*"],
+      "resources": ["popup.html", "css/*", "js/*", "page-interceptor.js"],
       "matches": ["*://*/*"]
     }
   ]

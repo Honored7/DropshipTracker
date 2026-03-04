@@ -805,79 +805,14 @@
   __name(extractElementData, "extractElementData");
 
   // src/content/interceptor.js
-  function pageInterceptorCode() {
-    const EVENT_NAME = "__dropship_intercepted__";
-    const PATTERNS = [
-      /\/feedback\/(\d+)\//,
-      /\/call_action\/getProductDetail/,
-      /\/review\/list/,
-      /\/reviews\.json/,
-      /\/product\/review/i,
-      /ae-feedback\.aliexpress\.com/,
-      /\/search\/feedback\.htm/,
-      /\/feedback\.do/
-    ];
-    function shouldCapture(url) {
-      return PATTERNS.some((p) => p.test(url));
-    }
-    __name(shouldCapture, "shouldCapture");
-    function dispatch(url, data) {
-      window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { url, data } }));
-    }
-    __name(dispatch, "dispatch");
-    const OrigXHR = window.XMLHttpRequest;
-    window.XMLHttpRequest = function() {
-      const xhr = new OrigXHR(...arguments);
-      let _url = "";
-      const origOpen = xhr.open.bind(xhr);
-      xhr.open = function(method, url, ...rest) {
-        _url = url || "";
-        return origOpen(method, url, ...rest);
-      };
-      xhr.addEventListener("load", function() {
-        try {
-          if (shouldCapture(_url) && xhr.responseText) {
-            const json = JSON.parse(xhr.responseText);
-            dispatch(_url, json);
-          }
-        } catch (_) {
-        }
-      });
-      return xhr;
-    };
-    Object.assign(window.XMLHttpRequest, OrigXHR);
-    const origFetch = window.fetch;
-    window.fetch = function(input, init) {
-      const url = typeof input === "string" ? input : input?.url || "";
-      return origFetch.call(this, input, init).then((response) => {
-        if (shouldCapture(url)) {
-          response.clone().json().then((json) => {
-            dispatch(url, json);
-          }).catch(() => {
-          });
-        }
-        return response;
-      });
-    };
-  }
-  __name(pageInterceptorCode, "pageInterceptorCode");
   function installInterceptor() {
-    try {
-      const scriptEl = document.createElement("script");
-      scriptEl.textContent = `(${pageInterceptorCode.toString()})();`;
-      (document.head || document.documentElement).prepend(scriptEl);
-      scriptEl.remove();
-    } catch (e) {
-      console.warn("[DropshipTracker] Could not inject interceptor:", e.message);
-      return;
-    }
     window.addEventListener("__dropship_intercepted__", (event) => {
       const { url, data } = event.detail || {};
       if (!url || !data)
         return;
       handleInterceptedData(url, data);
     });
-    console.log("[DropshipTracker] XHR/Fetch interceptor installed");
+    console.log("[DropshipTracker] XHR/Fetch interceptor listener installed");
   }
   __name(installInterceptor, "installInterceptor");
   function handleInterceptedData(url, data) {
