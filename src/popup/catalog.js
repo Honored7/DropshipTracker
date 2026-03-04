@@ -8,6 +8,7 @@ import {
   sendToContentScript, setStatus, showToast, showLoading, hideLoading,
   parsePrice, calculateSellingPrice, getShortFieldName
 } from './utils.js';
+import { isBackendAvailable, extractViaBackend, resetBackendCache } from './backendClient.js';
 import { refreshCatalogTable, updateCatalogCount, getSelectedCatalogRows } from './catalogTable.js';
 
 export function loadCatalog() {
@@ -132,7 +133,35 @@ export function addToCatalog() {
 export function updateCatalogFromPage() {
   setStatus('Extracting product to update catalog...');
 
-  sendToContentScript({ action: 'extractProduct' }, (response) => {
+  // Try Scrapling backend first, then fall back to content script
+  const _doExtract = async () => {
+    try {
+      const up = await isBackendAvailable();
+      if (up && state.tabUrl) {
+        try {
+          const r = await extractViaBackend(state.tabUrl);
+          if (r && (r.title || r.productId)) return r;
+        } catch (e) {
+          console.warn('[DropshipTracker] updateCatalog: backend failed, falling back:', e.message);
+          resetBackendCache();
+        }
+      }
+    } catch (e) { /* probe error */ }
+    return null;
+  };
+
+  _doExtract().then(backendResponse => {
+    if (backendResponse) {
+      _processUpdateResponse(backendResponse);
+      return;
+    }
+    sendToContentScript({ action: 'extractProduct' }, (response) => {
+      _processUpdateResponse(response);
+    });
+  });
+}
+
+function _processUpdateResponse(response) {
     if (!response || (!response.productId && !response.title)) {
       setStatus('Could not extract product data');
       showToast('No product data found. Make sure you\'re on a product page.', 'error');
@@ -194,7 +223,6 @@ export function updateCatalogFromPage() {
         setStatus('Update failed');
       }
     });
-  });
 }
 
 export function scrapeProductDetails(rowIndex, onComplete) {
@@ -231,10 +259,33 @@ export function scrapeProductDetails(rowIndex, onComplete) {
     return;
   }
 
-  setStatus(`Opening product page for scraping: ${product.title?.substring(0, 40)}...`);
+  // ── Backend fast path: POST URL to Scrapling, no tab needed ──────────────
+  isBackendAvailable().then(async (backendUp) => {
+    if (backendUp) {
+      try {
+        setStatus(`Scraping via backend: ${product.title?.substring(0, 35)}...`);
+        const response = await extractViaBackend(productUrl);
+        if (response && (response.title || response.productId)) {
+          _applyScrapedUpdates(response, product, rowIndex, done);
+          return;
+        }
+      } catch (e) {
+        console.warn('[DropshipTracker] scrapeProductDetails backend failed, opening tab:', e.message);
+        resetBackendCache();
+      }
+    }
+    // Fall back to background-tab + content-script approach
+    _scrapeViaTab(productUrl, product, rowIndex, done);
+  }).catch(() => _scrapeViaTab(productUrl, product, rowIndex, done));
+}
 
+/**
+ * Open a background tab, wait for it to load, send extractProduct message.
+ */
+function _scrapeViaTab(productUrl, product, rowIndex, done) {
   const ERROR_PAGE_PATTERNS = /^(HTTP\s*Status\s*\d|4\d{2}\s|5\d{2}\s|Access\s*Denied|Forbidden|Not\s*Found|Bad\s*Request|Service\s*Unavailable|Error|Page\s*Not\s*Found|Server\s*Error|Unauthorized)/i;
 
+  setStatus(`Opening product page for scraping: ${product.title?.substring(0, 40)}...`);
   chrome.tabs.create({ url: productUrl, active: false }, (tab) => {
     if (chrome.runtime.lastError || !tab) {
       showToast('Failed to open product page', 'error');
@@ -284,7 +335,6 @@ export function scrapeProductDetails(rowIndex, onComplete) {
 
               const title = response?.title || '';
               const isErrorPage = ERROR_PAGE_PATTERNS.test(title.trim());
-
               if (isErrorPage) {
                 showToast(`⚠ Error page detected for: ${product.title?.substring(0, 30)}...`, 'warning');
                 setStatus('Error page — product not updated');
@@ -293,73 +343,7 @@ export function scrapeProductDetails(rowIndex, onComplete) {
               }
 
               if (response && (response.productId || (response.title && response.title.length > 5))) {
-                const sanitized = typeof SanitizeService !== 'undefined'
-                  ? SanitizeService.sanitizeProduct(response)
-                  : response;
-
-                const updates = {
-                  title: sanitized.title || product.title,
-                  description: sanitized.description || product.description,
-                  fullDescription: sanitized.fullDescription || product.fullDescription,
-                  descriptionText: sanitized.descriptionText || product.descriptionText,
-                  shortDescription: sanitized.shortDescription || product.shortDescription,
-                  images: sanitized.images?.length > 0 ? sanitized.images : product.images,
-                  variants: sanitized.variants?.length > 0 ? sanitized.variants : product.variants,
-                  variantGroups: sanitized.variantGroups || product.variantGroups,
-                  reviews: sanitized.reviews?.length > 0 ? sanitized.reviews : product.reviews,
-                  rating: sanitized.rating || product.rating,
-                  reviewCount: sanitized.reviewCount || sanitized.review_count || product.reviewCount || '',
-                  soldCount: sanitized.soldCount || sanitized.sold_count || sanitized.orders || product.soldCount || '',
-                  shipping: sanitized.shipping || product.shipping,
-                  brand: sanitized.brand || product.brand,
-                  sku: sanitized.sku || product.sku,
-                  category: sanitized.category || product.category,
-                  stock: sanitized.stock !== undefined ? sanitized.stock : product.stock,
-                  weight: sanitized.weight || product.weight,
-                  metaKeywords: sanitized.metaKeywords || product.metaKeywords,
-                  metaDescription: sanitized.metaDescription || product.metaDescription,
-                  supplierPrice: sanitized.price ? parsePrice(sanitized.price) : product.supplierPrice,
-                  originalPrice: sanitized.originalPrice || product.originalPrice,
-                  currency: sanitized.currency || product.currency,
-                  videoUrls: sanitized.videoUrls || product.videoUrls || [],
-                  specifications: sanitized.specifications || product.specifications || [],
-                  storeName: sanitized.storeName || product.storeName,
-                  lastChecked: Date.now(),
-                  lastEnriched: Date.now()
-                };
-
-                const scrapedId = sanitized.productId || sanitized.sku || '';
-                if (scrapedId && product.productCode && product.productCode.startsWith('PROD-')) {
-                  updates.supplierProductId = scrapedId;
-                  updates.productCode = scrapedId;
-                }
-
-                if (sanitized.url && product.supplierUrl) {
-                  const isSearchUrl = /\/search|\/wholesale|SearchText|SearchScene|page\?/i.test(product.supplierUrl);
-                  if (isSearchUrl) {
-                    updates.supplierUrl = sanitized.url;
-                  }
-                }
-
-                if (updates.supplierPrice && updates.supplierPrice !== product.supplierPrice) {
-                  updates.yourPrice = calculateSellingPrice(updates.supplierPrice, parsePrice(updates.shipping || ''));
-                }
-
-                chrome.runtime.sendMessage({
-                  action: 'updateCatalogProduct',
-                  productCode: product.productCode,
-                  updates: updates
-                }, (resp) => {
-                  if (resp?.success) {
-                    Object.assign(state.catalog[rowIndex], updates);
-                    refreshCatalogTable();
-                    showToast(`✓ Scraped details for: ${sanitized.title?.substring(0, 30) || product.title?.substring(0, 30)}...`, 'success');
-                    setStatus('Product details updated');
-                  } else {
-                    showToast('Failed to save scraped details', 'warning');
-                  }
-                  finish(tabId);
-                });
+                _applyScrapedUpdates(response, product, rowIndex, () => finish(tabId));
               } else {
                 showToast('Could not extract product data from page', 'warning');
                 finish(tabId);
@@ -378,6 +362,78 @@ export function scrapeProductDetails(rowIndex, onComplete) {
         finish(tabId);
       }
     }, 30000);
+  });
+}
+
+/**
+ * Shared: save a scraped response into a catalog product.
+ * Called from both the backend path and the tab-based path.
+ */
+function _applyScrapedUpdates(response, product, rowIndex, onDone) {
+  const sanitized = typeof SanitizeService !== 'undefined'
+    ? SanitizeService.sanitizeProduct(response)
+    : response;
+
+  const updates = {
+    title: sanitized.title || product.title,
+    description: sanitized.description || product.description,
+    fullDescription: sanitized.fullDescription || product.fullDescription,
+    descriptionText: sanitized.descriptionText || product.descriptionText,
+    shortDescription: sanitized.shortDescription || product.shortDescription,
+    images: sanitized.images?.length > 0 ? sanitized.images : product.images,
+    variants: sanitized.variants?.length > 0 ? sanitized.variants : product.variants,
+    variantGroups: sanitized.variantGroups || product.variantGroups,
+    reviews: sanitized.reviews?.length > 0 ? sanitized.reviews : product.reviews,
+    rating: sanitized.rating || product.rating,
+    reviewCount: sanitized.reviewCount || sanitized.review_count || product.reviewCount || '',
+    soldCount: sanitized.soldCount || sanitized.sold_count || sanitized.orders || product.soldCount || '',
+    shipping: sanitized.shipping || product.shipping,
+    brand: sanitized.brand || product.brand,
+    sku: sanitized.sku || product.sku,
+    category: sanitized.category || product.category,
+    stock: sanitized.stock !== undefined ? sanitized.stock : product.stock,
+    weight: sanitized.weight || product.weight,
+    metaKeywords: sanitized.metaKeywords || product.metaKeywords,
+    metaDescription: sanitized.metaDescription || product.metaDescription,
+    supplierPrice: sanitized.price ? parsePrice(sanitized.price) : product.supplierPrice,
+    originalPrice: sanitized.originalPrice || product.originalPrice,
+    currency: sanitized.currency || product.currency,
+    videoUrls: sanitized.videoUrls || product.videoUrls || [],
+    specifications: sanitized.specifications || product.specifications || [],
+    storeName: sanitized.storeName || product.storeName,
+    lastChecked: Date.now(),
+    lastEnriched: Date.now()
+  };
+
+  const scrapedId = sanitized.productId || sanitized.sku || '';
+  if (scrapedId && product.productCode && product.productCode.startsWith('PROD-')) {
+    updates.supplierProductId = scrapedId;
+    updates.productCode = scrapedId;
+  }
+
+  if (sanitized.url && product.supplierUrl) {
+    const isSearchUrl = /\/search|\/wholesale|SearchText|SearchScene|page\?/i.test(product.supplierUrl);
+    if (isSearchUrl) updates.supplierUrl = sanitized.url;
+  }
+
+  if (updates.supplierPrice && updates.supplierPrice !== product.supplierPrice) {
+    updates.yourPrice = calculateSellingPrice(updates.supplierPrice, parsePrice(updates.shipping || ''));
+  }
+
+  chrome.runtime.sendMessage({
+    action: 'updateCatalogProduct',
+    productCode: product.productCode,
+    updates
+  }, (resp) => {
+    if (resp?.success) {
+      Object.assign(state.catalog[rowIndex], updates);
+      refreshCatalogTable();
+      showToast(`✓ Scraped: ${sanitized.title?.substring(0, 30) || product.title?.substring(0, 30)}...`, 'success');
+      setStatus(`Updated — ${sanitized._source === 'backend' ? 'via Scrapling backend' : 'via content script'}`);
+    } else {
+      showToast('Failed to save scraped details', 'warning');
+    }
+    if (typeof onDone === 'function') onDone();
   });
 }
 

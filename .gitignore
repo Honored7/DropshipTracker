@@ -4,3 +4,7 @@ node_modules/
 Thumbs.db
 *.bak
 *.tmp
+# Python
+__pycache__/
+*.py[cod]
+*.pyo

@@ -101,6 +101,31 @@ body {
   50% { opacity: 0.5; }
 }
 
+.backend-status {
+  cursor: default;
+  margin-right: 8px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.backend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #888;
+  transition: background 0.3s;
+}
+
+.backend-dot.up {
+  background: #5cb85c;
+  box-shadow: 0 0 5px rgba(92, 184, 92, 0.6);
+}
+
+.backend-dot.down {
+  background: #d9534f;
+}
+
 /* Tabs */
 .nav-tabs {
   background-color: #fff;

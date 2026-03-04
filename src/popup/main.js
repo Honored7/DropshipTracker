@@ -16,6 +16,7 @@ import { exportCSCart, exportCatalog, copyToClipboard, downloadRawXlsx } from '.
 import { deletePreviewedItem } from './preview.js';
 import { checkDriveAuth, authorizeDrive, disconnectDrive, uploadToDrive, syncCatalogToDrive } from './googleDrive.js';
 import { loadSettings, saveSettings, loadSuppliers, saveNewSupplier, exportAllData, importData, clearAllData } from './settings.js';
+import { isBackendAvailable, resetBackendCache } from './backendClient.js';
 
 // ============================================
 // INITIALIZATION
@@ -46,6 +47,8 @@ $(document).ready(function() {
   initializeCatalogTable();
   bindEvents();
   checkDriveAuth();
+  _checkBackend();
+  setInterval(_checkBackend, 30000);
 
   // Listen for messages from content script
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -66,6 +69,26 @@ $(document).ready(function() {
 
   console.log("[DropshipTracker] Popup initialized for tab", state.tabId, "domain:", state.tabDomain);
 });
+
+// ============================================
+// BACKEND STATUS
+// ============================================
+
+async function _checkBackend() {
+  resetBackendCache();
+  const up = await isBackendAvailable();
+  const dot = document.querySelector('#backendStatus .backend-dot');
+  const wrap = document.getElementById('backendStatus');
+  if (dot) {
+    dot.classList.toggle('up', up);
+    dot.classList.toggle('down', !up);
+  }
+  if (wrap) {
+    wrap.title = up
+      ? 'Scrapling backend: running ✓'
+      : 'Scrapling backend: offline — run: uvicorn backend.main:app --port 8000';
+  }
+}
 
 // ============================================
 // EVENT BINDINGS

@@ -178,14 +178,25 @@ export function mergeJSONProductData(result, data, config) {
 
     // Price
     if (!result.price) {
-      const priceObj = obj.price || obj.priceInfo || obj.formatedActivityPrice ||
-                       obj.activityPrice || obj.minPrice || obj.salePrice || null;
+      // AliExpress 2024: actPrice is a plain string on priceInfo; also handle
+      // discountPrice.minAmount for tiered pricing.
+      if (!result.price && obj.actPrice) result.price = String(obj.actPrice);
+      if (!result.price && obj.discountPrice?.minAmount) result.price = String(obj.discountPrice.minAmount);
+      if (!result.originalPrice && obj.originalPrice?.formatedPrice) result.originalPrice = obj.originalPrice.formatedPrice;
+
+      const priceObj = obj.price || obj.priceInfo ||
+                       obj.formatedActivityPrice || obj.activityPrice ||
+                       obj.minPrice || obj.salePrice || null;
       if (typeof priceObj === 'object' && priceObj) {
-        result.price = priceObj.value || priceObj.minPrice || priceObj.formatedPrice ||
-                       priceObj.actPrice || priceObj.salePrice || priceObj.discountPrice?.minPrice ||
+        result.price = result.price ||
+                       priceObj.actPrice || priceObj.value || priceObj.minPrice ||
+                       priceObj.formatedPrice || priceObj.salePrice ||
+                       priceObj.discountPrice?.minPrice || priceObj.discountPrice?.minAmount ||
                        priceObj.formatedActivityPrice || null;
-        result.originalPrice = result.originalPrice || priceObj.originalPrice || priceObj.maxPrice ||
-                               priceObj.formatedBiggestPrice || priceObj.formatedPrice || null;
+        result.originalPrice = result.originalPrice || priceObj.originalPrice ||
+                               priceObj.originalPrice?.formatedPrice ||
+                               priceObj.maxPrice || priceObj.formatedBiggestPrice ||
+                               priceObj.formatedPrice || null;
         result.currency = result.currency || priceObj.currency || priceObj.currencySymbol ||
                           priceObj.currencyCode || null;
       } else if (priceObj) {
@@ -977,9 +988,19 @@ export function extractProductDetails(callback) {
     product.images = product.images.slice(0, 20);
   }
 
-  // === VARIANTS ===
-  product.variantGroups = extractVariantGroups(config);
-  product.variants = product.variantGroups.allVariants || [];
+  // === VARIANTS (DOM fallback — only fills in if JSON extraction found nothing) ===
+  // JSON extraction writes variantGroups as an array; DOM extractVariantGroups returns
+  // { groups: {Color:[...]}, allVariants:[...] } — converted below to the same format.
+  if (!product.variantGroups || !Array.isArray(product.variantGroups) || product.variantGroups.length === 0) {
+    const domVars = extractVariantGroups(config);
+    product.variantGroups = Object.entries(domVars.groups || {}).map(([name, vals]) => ({
+      name,
+      values: vals.map(v => ({ name: v.name, id: v.value || null, image: v.image || null }))
+    }));
+    if (!product.variants || product.variants.length === 0) {
+      product.variants = domVars.allVariants || [];
+    }
+  }
 
   // === REVIEWS ===
   // Merge DOM-scraped reviews with any API responses captured by the interceptor

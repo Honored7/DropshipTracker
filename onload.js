@@ -976,10 +976,16 @@
         result.title = obj.title || obj.name || obj.productTitle || obj.subject || obj.productName || null;
       }
       if (!result.price) {
+        if (!result.price && obj.actPrice)
+          result.price = String(obj.actPrice);
+        if (!result.price && obj.discountPrice?.minAmount)
+          result.price = String(obj.discountPrice.minAmount);
+        if (!result.originalPrice && obj.originalPrice?.formatedPrice)
+          result.originalPrice = obj.originalPrice.formatedPrice;
         const priceObj = obj.price || obj.priceInfo || obj.formatedActivityPrice || obj.activityPrice || obj.minPrice || obj.salePrice || null;
         if (typeof priceObj === "object" && priceObj) {
-          result.price = priceObj.value || priceObj.minPrice || priceObj.formatedPrice || priceObj.actPrice || priceObj.salePrice || priceObj.discountPrice?.minPrice || priceObj.formatedActivityPrice || null;
-          result.originalPrice = result.originalPrice || priceObj.originalPrice || priceObj.maxPrice || priceObj.formatedBiggestPrice || priceObj.formatedPrice || null;
+          result.price = result.price || priceObj.actPrice || priceObj.value || priceObj.minPrice || priceObj.formatedPrice || priceObj.salePrice || priceObj.discountPrice?.minPrice || priceObj.discountPrice?.minAmount || priceObj.formatedActivityPrice || null;
+          result.originalPrice = result.originalPrice || priceObj.originalPrice || priceObj.originalPrice?.formatedPrice || priceObj.maxPrice || priceObj.formatedBiggestPrice || priceObj.formatedPrice || null;
           result.currency = result.currency || priceObj.currency || priceObj.currencySymbol || priceObj.currencyCode || null;
         } else if (priceObj) {
           result.price = priceObj;
@@ -1699,8 +1705,16 @@
       }
       product.images = product.images.slice(0, 20);
     }
-    product.variantGroups = extractVariantGroups(config);
-    product.variants = product.variantGroups.allVariants || [];
+    if (!product.variantGroups || !Array.isArray(product.variantGroups) || product.variantGroups.length === 0) {
+      const domVars = extractVariantGroups(config);
+      product.variantGroups = Object.entries(domVars.groups || {}).map(([name, vals]) => ({
+        name,
+        values: vals.map((v) => ({ name: v.name, id: v.value || null, image: v.image || null }))
+      }));
+      if (!product.variants || product.variants.length === 0) {
+        product.variants = domVars.allVariants || [];
+      }
+    }
     product.reviews = mergeInterceptedReviews(extractReviewsData(config));
     if (!product.description) {
       const descSelectors = config?.descriptionSelectors || [
