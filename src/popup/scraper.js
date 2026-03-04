@@ -193,96 +193,305 @@ export function extractProduct() {
 
 /**
  * Shared handler for extracted product data — works for both backend and
- * content-script responses.  Matches the original extractProduct() flow.
+ * content-script responses. Renders to the dedicated product panel.
  *
  * @param {object} response
  */
+
+// Which product is currently displayed in the panel (index into state.rawData)
+let _ppIndex = 0;
+
 function _handleExtractedProduct(response) {
-      const sanitized = typeof SanitizeService !== 'undefined'
-        ? SanitizeService.sanitizeProduct(response)
-        : response;
+  const sanitized = typeof SanitizeService !== 'undefined'
+    ? SanitizeService.sanitizeProduct(response)
+    : response;
 
-      // If the table currently holds non-product rows (generic Find-Tables
-      // scrape, no 'Product ID' column), clear them so the product rows
-      // don't merge with a completely different column schema and produce
-      // the "two tables side by side" visual artefact.
-      const hasGenericRows = state.data.length > 0 &&
-        !state.data.some(r => 'Product ID' in r);
-      if (hasGenericRows) {
-        state.data = [];
-        state.rawData = [];
-        state.fieldNames = [];
-      }
+  // Build a display row (used by addToCatalog / export)
+  const row = {
+    'Product ID': sanitized.productId || '',
+    'Title': sanitized.title || '',
+    'Price': sanitized.price || '',
+    'Original Price': sanitized.originalPrice || '',
+    'Currency': sanitized.currency || 'USD',
+    'Short Description': sanitized.shortDescription || '',
+    'Description': sanitized.descriptionText || sanitized.description || '',
+    'Full Description': sanitized.fullDescription || '',
+    'Category': sanitized.category || '',
+    'Images': (sanitized.images || []).join('|||'),
+    'URL': sanitized.url || '',
+    'Domain': sanitized.domain || '',
+    'Variants': JSON.stringify(sanitized.variants || []),
+    'Variant Groups': JSON.stringify(sanitized.variantGroups || []),
+    'Reviews': JSON.stringify(sanitized.reviews || []),
+    'Rating': sanitized.rating || '',
+    'Review Count': sanitized.reviewCount || '',
+    'Sold': sanitized.soldCount || sanitized.orders || '',
+    'Brand': sanitized.brand || '',
+    'SKU': sanitized.sku || '',
+    'Stock': sanitized.stock || '',
+    'Availability': sanitized.availability || '',
+    'Weight': sanitized.weight || '',
+    'Shipping': sanitized.shippingText || sanitized.shipping || '',
+    'Shipping Cost': sanitized.shippingCost || '',
+    'Store': sanitized.storeName || '',
+    'Store Rating': sanitized.storeRating || '',
+    'Min Order': sanitized.minOrder || '',
+    'Video URLs': (sanitized.videoUrls || []).join('|||'),
+    'Specifications': JSON.stringify(sanitized.specifications || []),
+    'Meta Keywords': sanitized.metaKeywords || '',
+    'Meta Description': sanitized.metaDescription || sanitized.shortDescription || ''
+  };
 
-      const row = {
-        'Product ID': sanitized.productId || '',
-        'Title': sanitized.title || '',
-        'Price': sanitized.price || '',
-        'Original Price': sanitized.originalPrice || '',
-        'Currency': sanitized.currency || 'USD',
-        'Short Description': sanitized.shortDescription || '',
-        'Description': sanitized.descriptionText || sanitized.description || '',
-        'Full Description': sanitized.fullDescription || '',
-        'Category': sanitized.category || '',
-        'Images': (sanitized.images || []).join('|||'),
-        'URL': sanitized.url || '',
-        'Domain': sanitized.domain || '',
-        'Variants': JSON.stringify(sanitized.variants || []),
-        'Variant Groups': JSON.stringify(sanitized.variantGroups || []),
-        'Reviews': JSON.stringify(sanitized.reviews || []),
-        'Rating': sanitized.rating || '',
-        'Review Count': sanitized.reviewCount || '',
-        'Sold': sanitized.soldCount || sanitized.orders || '',
-        'Brand': sanitized.brand || '',
-        'SKU': sanitized.sku || '',
-        'Stock': sanitized.stock || '',
-        'Availability': sanitized.availability || '',
-        'Weight': sanitized.weight || '',
-        'Shipping': sanitized.shippingText || sanitized.shipping || '',
-        'Shipping Cost': sanitized.shippingCost || '',
-        'Store': sanitized.storeName || '',
-        'Store Rating': sanitized.storeRating || '',
-        'Min Order': sanitized.minOrder || '',
-        'Video URLs': (sanitized.videoUrls || []).join('|||'),
-        'Specifications': JSON.stringify(sanitized.specifications || []),
-        'Meta Keywords': sanitized.metaKeywords || '',
-        'Meta Description': sanitized.metaDescription || sanitized.shortDescription || ''
-      };
+  // Upsert into state arrays (needed by addToCatalog)
+  const existingIndex = state.rawData.findIndex(r =>
+    (r.productId && r.productId === response.productId) ||
+    (r.url && r.url === response.url)
+  );
+  if (existingIndex >= 0) {
+    state.rawData[existingIndex] = { ...state.rawData[existingIndex], ...sanitized };
+    state.data[existingIndex] = { ...state.data[existingIndex], ...row };
+    _ppIndex = existingIndex;
+    showToast(`Updated: ${sanitized.title?.substring(0, 40) || 'product'}`, 'success');
+  } else {
+    state.rawData.push(sanitized);
+    state.data.push(row);
+    _ppIndex = state.rawData.length - 1;
+    showToast(`Extracted: ${sanitized.title?.substring(0, 40) || 'product'}`, 'success');
+  }
 
-      const existingIndex = state.rawData.findIndex(r =>
-        (r.productId && r.productId === response.productId) ||
-        (r.url && r.url === response.url)
-      );
+  Object.keys(row).forEach(key => {
+    if (!state.fieldNames.includes(key)) state.fieldNames.push(key);
+  });
 
-      if (existingIndex >= 0) {
-        state.rawData[existingIndex] = { ...state.rawData[existingIndex], ...response };
-        state.data[existingIndex] = { ...state.data[existingIndex], ...row };
-        showToast(`Updated existing product: ${response.title?.substring(0, 40)}...`, 'success');
-      } else {
-        state.rawData.push(response);
-        state.data.push(row);
-        showToast(`Added product: ${response.title?.substring(0, 40)}...`, 'success');
-      }
+  // Switch to and populate the product panel
+  _renderProductPanel(sanitized, _ppIndex, state.rawData.length);
+  _enterProductMode();
 
-      Object.keys(row).forEach(key => {
-        if (!state.fieldNames.includes(key)) {
-          state.fieldNames.push(key);
-        }
-      });
-
-      updateDataTable(state.data);
-      setStatus(`${state.data.length} products in scraper`);
-      updateRowCount(state.data.length);
-
-      $('#addToCatalogBtn').prop('disabled', false);
-      updateExportButtons();
-      showFieldMapping();
-      saveScrapedData();
-      hideLoading();
+  setStatus(`${state.rawData.length} product${state.rawData.length === 1 ? '' : 's'} extracted`);
+  updateRowCount(state.rawData.length);
+  $('#addToCatalogBtn').prop('disabled', false);
+  updateExportButtons();
+  saveScrapedData();
+  hideLoading();
 }
 
 // ============================================
-// PROCESS SCRAPED DATA
+// PRODUCT PANEL MODE
+// ============================================
+
+/**
+ * Switch to product-panel mode: hide Handsontable, show product card.
+ */
+function _enterProductMode() {
+  $('#tableModeView').hide();
+  $('#fieldMappingSection').hide();
+  $('#productPanel').show();
+
+  // Wire prev/next navigation (safe to re-bind)
+  $('#ppPrevBtn').off('click').on('click', () => {
+    if (_ppIndex > 0) {
+      _ppIndex--;
+      _renderProductPanel(state.rawData[_ppIndex], _ppIndex, state.rawData.length);
+    }
+  });
+  $('#ppNextBtn').off('click').on('click', () => {
+    if (_ppIndex < state.rawData.length - 1) {
+      _ppIndex++;
+      _renderProductPanel(state.rawData[_ppIndex], _ppIndex, state.rawData.length);
+    }
+  });
+}
+
+/**
+ * Switch to table mode: hide product card, show Handsontable.
+ */
+export function enterTableMode() {
+  $('#productPanel').hide();
+  $('#tableModeView').show();
+}
+
+/**
+ * Populate every element of the product panel with data from `product`.
+ */
+function _renderProductPanel(product, index, total) {
+  if (!product) return;
+
+  // ── Images ──────────────────────────────────────────────────────────────
+  const images = Array.isArray(product.images) ? product.images : [];
+  const mainSrc = images[0] || '';
+  if (mainSrc) {
+    $('#ppMainImg').attr('src', mainSrc);
+    $('#ppMainImg').parent().show();
+  } else {
+    $('#ppMainImg').parent().hide();
+  }
+
+  const thumbsEl = $('#ppThumbs').empty();
+  images.slice(0, 16).forEach((src, i) => {
+    $('<img>')
+      .addClass('pp-thumb' + (i === 0 ? ' active' : ''))
+      .attr('src', src)
+      .attr('title', `Image ${i + 1}`)
+      .on('click', function() {
+        $('#ppMainImg').attr('src', src);
+        thumbsEl.find('.pp-thumb').removeClass('active');
+        $(this).addClass('active');
+      })
+      .appendTo(thumbsEl);
+  });
+
+  // ── Badges ──────────────────────────────────────────────────────────────
+  const domain = product.domain ||
+    (() => { try { return new URL(product.url || '').hostname.replace('www.', ''); } catch(e) { return ''; } })();
+  _ppBadge('#ppDomainBadge', domain);
+  _ppBadge('#ppIdBadge', product.productId ? `ID: ${product.productId}` : (product.sku ? `SKU: ${product.sku}` : ''));
+  _ppBadge('#ppBrandBadge', product.brand ? `🏷 ${product.brand}` : '');
+  _ppBadge('#ppStoreBadge', product.storeName ? `🏪 ${product.storeName}` : '');
+
+  // ── Title ────────────────────────────────────────────────────────────────
+  $('#ppTitle').text(product.title || 'Untitled Product');
+
+  // ── Price ────────────────────────────────────────────────────────────────
+  const currency = product.currency || '';
+  const price = product.price || '';
+  const origPrice = product.originalPrice || '';
+  $('#ppPrice').text(price ? `${currency}${price}` : '');
+  const showOrig = origPrice && origPrice !== price;
+  $('#ppOrigPrice').text(showOrig ? `${currency}${origPrice}` : '').toggle(showOrig);
+
+  if (showOrig) {
+    const p = parseFloat(String(price).replace(/[^0-9.]/g, ''));
+    const o = parseFloat(String(origPrice).replace(/[^0-9.]/g, ''));
+    if (o > p && p > 0) {
+      $('#ppDiscount').text(`-${Math.round((o - p) / o * 100)}%`).show();
+    } else {
+      $('#ppDiscount').hide();
+    }
+  } else {
+    $('#ppDiscount').hide();
+  }
+  $('#ppCurrency').text('');
+
+  // ── Stats ────────────────────────────────────────────────────────────────
+  _ppStat('#ppRating', product.rating ? `⭐ ${product.rating}` : '');
+  _ppStat('#ppReviewCount', product.reviewCount ? `${product.reviewCount} reviews` : '');
+  const soldRaw = product.soldCount || product.orders || product.sold;
+  _ppStat('#ppSold', soldRaw ? `🛒 ${soldRaw} sold` : '');
+  const stockVal = product.stock;
+  _ppStat('#ppStock', (stockVal !== undefined && stockVal !== '') ? `📦 ${stockVal}` : '');
+
+  // ── Variants ─────────────────────────────────────────────────────────────
+  const variantGroups = product.variantGroups || [];
+  if (variantGroups.length > 0) {
+    const variantsEl = $('#ppVariants').empty();
+    variantGroups.forEach(group => {
+      const groupEl = $('<div>').addClass('pp-variant-group');
+      $('<div>').addClass('pp-variant-group-name').text(group.name || 'Option').appendTo(groupEl);
+      const chips = $('<div>').addClass('pp-variant-chips');
+      const values = group.values || group.vals || [];
+      values.forEach(v => {
+        const name = typeof v === 'string' ? v : (v.name || v.value || String(v));
+        $('<span>').addClass('pp-variant-chip').text(name).appendTo(chips);
+      });
+      chips.appendTo(groupEl);
+      groupEl.appendTo(variantsEl);
+    });
+    $('#ppVariantsSection').show();
+  } else {
+    $('#ppVariantsSection').hide();
+  }
+
+  // ── Action buttons ────────────────────────────────────────────────────────
+  $('#ppAddBtn').prop('disabled', false);
+  $('#ppProductCount').text(total > 1 ? total : '').toggle(total > 1);
+  $('#ppClearBtn').show();
+
+  if (product.url) {
+    $('#ppUrlLink').attr('href', product.url).show();
+  } else {
+    $('#ppUrlLink').hide();
+  }
+
+  // ── Navigation ──────────────────────────────────────────────────────────
+  if (total > 1) {
+    $('#ppNavLabel').text(`${index + 1} / ${total} products`);
+    $('#ppProductNav').show();
+    $('#ppPrevBtn').prop('disabled', index === 0);
+    $('#ppNextBtn').prop('disabled', index === total - 1);
+  } else {
+    $('#ppProductNav').hide();
+  }
+
+  // ── Description tab ──────────────────────────────────────────────────────
+  const shortDesc = product.shortDescription || '';
+  const desc = product.descriptionText || product.description || '';
+  $('#ppShortDesc').text(shortDesc).toggle(!!shortDesc);
+  $('#ppDescription').text(desc || 'No description available.');
+
+  // ── Specifications tab ───────────────────────────────────────────────────
+  const specEl = $('#ppSpecRows').empty();
+  const specs = Array.isArray(product.specifications) ? product.specifications : [];
+  if (specs.length > 0) {
+    specs.forEach(spec => {
+      const name = typeof spec === 'string' ? spec
+        : (spec.name || spec.key || (Object.keys(spec)[0] || ''));
+      const val = typeof spec === 'string' ? ''
+        : (spec.value || spec.val || (Object.values(spec)[0] || ''));
+      $('<tr>')
+        .append($('<td>').text(name))
+        .append($('<td>').text(val))
+        .appendTo(specEl);
+    });
+  } else {
+    $('<tr>').append($('<td colspan="2" class="text-muted">').text('No specifications available.')).appendTo(specEl);
+  }
+
+  // ── Reviews tab ──────────────────────────────────────────────────────────
+  const reviewsEl = $('#ppReviews').empty();
+  const reviews = Array.isArray(product.reviews) ? product.reviews : [];
+  if (reviews.length > 0) {
+    reviews.slice(0, 15).forEach(r => {
+      const item = $('<div>').addClass('pp-review-item');
+      const rating = parseFloat(r.rating || r.stars || 0);
+      if (rating > 0) $('<div>').addClass('pp-review-rating').text('★'.repeat(Math.min(5, Math.round(rating)))).appendTo(item);
+      const author = r.author || r.reviewer || r.username;
+      if (author) $('<div>').addClass('pp-review-author').text(author).appendTo(item);
+      const body = r.text || r.comment || r.body || r.content || r.review;
+      if (body) $('<div>').addClass('pp-review-body').text(body).appendTo(item);
+      reviewsEl.append(item);
+    });
+  } else {
+    reviewsEl.text('No reviews available.');
+  }
+
+  // ── Meta/Details tab ─────────────────────────────────────────────────────
+  const metaEl = $('#ppMetaRows').empty();
+  [
+    ['SKU', product.sku],
+    ['Brand', product.brand],
+    ['Category', product.category],
+    ['Weight', product.weight],
+    ['Shipping', product.shippingText || product.shipping],
+    ['Min Order', product.minOrder],
+    ['Availability', product.availability],
+    ['Store', product.storeName],
+    ['Store Rating', product.storeRating],
+    ['Meta Keywords', product.metaKeywords],
+    ['URL', product.url]
+  ].forEach(([label, val]) => {
+    if (val) $('<tr>').append($('<td>').text(label)).append($('<td>').text(val)).appendTo(metaEl);
+  });
+}
+
+function _ppBadge(selector, text) {
+  if (text) $(selector).text(text).show(); else $(selector).hide();
+}
+function _ppStat(selector, text) {
+  if (text) $(selector).text(text).show(); else $(selector).hide();
+}
+
+// ============================================
+// PROCESS SCRAPED DATA  (Find-Tables flow)
 // ============================================
 
 export function processScrapedData(rawData) {
@@ -369,10 +578,14 @@ export function processScrapedData(rawData) {
   console.log('[DropshipTracker] Display data sample:', displayData[0]);
 
   state.data = displayData;
+
+  // Switch to table view — this is table-scraping data, NOT product extract
+  enterTableMode();
   updateDataTable(displayData);
   showFieldMapping();
   saveScrapedData();
 }
+
 
 // ============================================
 // CRAWL / PAGINATION
@@ -660,15 +873,32 @@ export function clearAllScrapedData() {
   state.rawData = [];
   state.fieldNames = [];
   state.fieldMapping = {};
+  _ppIndex = 0;
 
   state.dataTable.loadData([]);
   updateExportButtons();
   $('#rowCount').text('0');
   $('#clearScrapedBtn').prop('disabled', true);
   $('#fieldMappingSection').hide();
+  $('#addToCatalogBtn').prop('disabled', true);
 
+  // Reset product panel
+  $('#ppTitle').text('No product extracted yet');
+  $('#ppPrice, #ppOrigPrice, #ppDiscount').text('');
+  $('#ppMainImg').attr('src', '');
+  $('#ppThumbs').empty();
+  ['#ppDomainBadge','#ppIdBadge','#ppBrandBadge','#ppStoreBadge'].forEach(s => $(s).hide());
+  ['#ppRating','#ppReviewCount','#ppSold','#ppStock'].forEach(s => $(s).hide());
+  $('#ppVariantsSection').hide();
+  $('#ppAddBtn').prop('disabled', true);
+  $('#ppClearBtn, #ppUrlLink, #ppProductNav').hide();
+  $('#ppShortDesc, #ppDescription').text('');
+  $('#ppSpecRows, #ppReviews, #ppMetaRows').empty();
+
+  // Return to table view
+  enterTableMode();
   clearScrapedSession();
 
   showToast('All scraped data cleared', 'success');
-  setStatus('Ready. Click "Find Tables" to detect data on page.');
+  setStatus('Ready. Click "Find Tables" to detect data on page, or "Extract Product" on a product page.');
 }

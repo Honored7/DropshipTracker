@@ -150,12 +150,109 @@
           </div>
         </div>
 
-        <!-- Data Preview (Handsontable) -->
-        <div class="row">
-          <div class="col-xs-12">
-            <div id="dataPreview"></div>
+        <!-- Data Preview (Handsontable) — TABLE MODE -->
+        <div id="tableModeView">
+          <div class="row">
+            <div class="col-xs-12">
+              <div id="dataPreview"></div>
+            </div>
           </div>
         </div>
+
+        <!-- PRODUCT MODE: rich product card, shown by Extract Product button -->
+        <div id="productPanel" style="display:none;" class="product-panel">
+
+          <!-- Top layout: image strip | product info -->
+          <div class="pp-layout">
+
+            <div class="pp-images-col">
+              <div class="pp-main-img-wrap">
+                <img id="ppMainImg" src="" class="pp-main-img" alt="Product image">
+              </div>
+              <div id="ppThumbs" class="pp-thumbs"></div>
+            </div>
+
+            <div class="pp-info-col">
+              <div class="pp-badges">
+                <span id="ppDomainBadge" class="label label-info pp-badge" style="display:none;"></span>
+                <span id="ppIdBadge" class="label label-default pp-badge" style="display:none;"></span>
+                <span id="ppBrandBadge" class="label label-warning pp-badge" style="display:none;"></span>
+                <span id="ppStoreBadge" class="label label-primary pp-badge" style="display:none;"></span>
+              </div>
+
+              <h3 id="ppTitle" class="pp-title">No product extracted yet</h3>
+
+              <div class="pp-price-row">
+                <span id="ppPrice" class="pp-price"></span>
+                <span id="ppOrigPrice" class="pp-orig-price"></span>
+                <span id="ppDiscount" class="pp-discount-badge"></span>
+                <span id="ppCurrency" class="pp-currency-label"></span>
+              </div>
+
+              <div class="pp-stats-row">
+                <span id="ppRating" class="pp-stat" style="display:none;"></span>
+                <span id="ppReviewCount" class="pp-stat" style="display:none;"></span>
+                <span id="ppSold" class="pp-stat" style="display:none;"></span>
+                <span id="ppStock" class="pp-stat" style="display:none;"></span>
+              </div>
+
+              <div id="ppVariantsSection" class="pp-variants-section" style="display:none;">
+                <div class="pp-variants-label">Variants</div>
+                <div id="ppVariants" class="pp-variants"></div>
+              </div>
+
+              <div class="pp-actions-row">
+                <button class="btn btn-success" id="ppAddBtn" disabled>
+                  <span class="glyphicon glyphicon-plus"></span>
+                  Add to Catalog
+                  <span id="ppProductCount" class="badge" style="background:#1a7a41;"></span>
+                </button>
+                <a id="ppUrlLink" href="#" target="_blank" class="btn btn-default" style="display:none;">
+                  <span class="glyphicon glyphicon-new-window"></span> Open
+                </a>
+                <button class="btn btn-danger btn-sm pull-right" id="ppClearBtn" title="Clear extracted product" style="display:none;">
+                  <span class="glyphicon glyphicon-trash"></span> Clear
+                </button>
+              </div>
+
+              <div id="ppProductNav" class="pp-product-nav" style="display:none;">
+                <button class="btn btn-xs btn-default" id="ppPrevBtn">&#8249; Prev</button>
+                <span id="ppNavLabel" class="pp-nav-label"></span>
+                <button class="btn btn-xs btn-default" id="ppNextBtn">Next &#8250;</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Detail tabs: Description | Specs | Reviews | Meta -->
+          <div class="pp-details">
+            <ul class="nav nav-tabs pp-nav-tabs" role="tablist">
+              <li role="presentation" class="active"><a href="#ppTabDesc" data-toggle="tab">Description</a></li>
+              <li role="presentation"><a href="#ppTabSpecs" data-toggle="tab">Specs</a></li>
+              <li role="presentation"><a href="#ppTabReviews" data-toggle="tab">Reviews</a></li>
+              <li role="presentation"><a href="#ppTabMeta" data-toggle="tab">Details</a></li>
+            </ul>
+            <div class="tab-content pp-tab-content">
+              <div role="tabpanel" class="tab-pane active" id="ppTabDesc">
+                <div id="ppShortDesc" class="pp-short-desc"></div>
+                <div id="ppDescription" class="pp-description"></div>
+              </div>
+              <div role="tabpanel" class="tab-pane" id="ppTabSpecs">
+                <table class="table table-condensed table-bordered pp-specs-table">
+                  <tbody id="ppSpecRows"></tbody>
+                </table>
+              </div>
+              <div role="tabpanel" class="tab-pane" id="ppTabReviews">
+                <div id="ppReviews" class="pp-reviews"></div>
+              </div>
+              <div role="tabpanel" class="tab-pane" id="ppTabMeta">
+                <table class="table table-condensed pp-meta-table">
+                  <tbody id="ppMetaRows"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /#productPanel -->
 
         <!-- Field Mapping -->
         <div class="row field-mapping-section" id="fieldMappingSection" style="display:none;">

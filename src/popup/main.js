@@ -9,7 +9,7 @@ import { debounce, showToast } from './utils.js';
 import { loadScrapedData, loadPersistedFieldMapping, loadCustomSelectors, saveCustomSelectors, updateCustomSelectorsList } from './persistence.js';
 import { initializeDataTable, toggleExpandColumns } from './dataTable.js';
 import { initializeCatalogTable, refreshCatalogTable, selectAllProducts, deselectAllProducts, invertSelection, selectByFilter, filterCatalog } from './catalogTable.js';
-import { handleSelectorPickerResult, startPickSelector, findTables, nextTable, extractProduct, locateNextButton, startCrawl, stopCrawl, testScrape, clearAllScrapedData } from './scraper.js';
+import { handleSelectorPickerResult, startPickSelector, findTables, nextTable, extractProduct, locateNextButton, startCrawl, stopCrawl, testScrape, clearAllScrapedData, enterTableMode } from './scraper.js';
 import { loadCatalog, addToCatalog, updateCatalogFromPage, scrapeSelectedProducts, deleteSelectedProducts, clearEntireCatalog, checkPrices } from './catalog.js';
 import { autoMapFields } from './fieldMapping.js';
 import { exportCSCart, exportCatalog, copyToClipboard, downloadRawXlsx } from './export.js';
@@ -114,6 +114,11 @@ function bindEvents() {
   $('#addToCatalogBtn').on('click', addToCatalog);
   $('#clearScrapedBtn').on('click', clearAllScrapedData);
   $('#testScrapeBtn').on('click', testScrape);
+
+  // Product panel buttons
+  $('#ppAddBtn').on('click', addToCatalog);
+  $('#ppClearBtn').on('click', clearAllScrapedData);
+  $('#ppSwitchToTableBtn, #ppTableViewBtn').on('click', enterTableMode);
 
   // Export buttons
   $('#exportXmlBtn').on('click', () => exportCSCart('xml'));
