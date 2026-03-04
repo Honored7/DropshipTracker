@@ -44,10 +44,6 @@
     }
   },
   
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' 'sha256-wU69YSS4ukvyxK3Ing/VVNKmvvVRFq5blHbZfgAjWcM='; object-src 'self'"
-  },
-
   "content_scripts": [
     {
       "matches": ["*://www.aliexpress.com/*", "*://www.aliexpress.us/*", "*://www.alibaba.com/*"],
