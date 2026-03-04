@@ -28,6 +28,22 @@ export function addToCatalog() {
   const products = state.data.map((row, index) => {
     const rawRow = state.rawData[index] || {};
 
+    // rawRow can come from two sources:
+    //   a) "Find Tables" scrape → arbitrary TitleCase or original-page keys
+    //   b) "Extract Product" response → camelCase keys (title, price, images[], etc.)
+    // Helper reads both so neither path drops data.
+    const raw = (camel, titled) => {
+      const v = rawRow[camel];
+      if (v !== undefined && v !== null && v !== '') return v;
+      return titled ? rawRow[titled] : undefined;
+    };
+
+    const toStr = (v) => {
+      if (v === undefined || v === null) return '';
+      if (Array.isArray(v)) return v.join(',');
+      return String(v);
+    };
+
     const getMappedValue = (exportField) => {
       const smartNames = state.smartNames || {};
       for (const [sourceField, mappedTo] of Object.entries(state.fieldMapping)) {
@@ -40,6 +56,9 @@ export function addToCatalog() {
     };
 
     const findProductUrl = () => {
+      // For product-extraction rows rawRow.url is already set
+      if (rawRow.url && rawRow.url.startsWith('http')) return rawRow.url;
+
       const candidates = [];
       for (const [key, val] of Object.entries(rawRow)) {
         if (!val || typeof val !== 'string') continue;
@@ -62,61 +81,132 @@ export function addToCatalog() {
       return candidates[0].url;
     };
 
-    const supplierProductId = getMappedValue('product_code') || rawRow._supplierProductId || '';
-    const supplierSku = getMappedValue('supplier_sku') || rawRow._supplierSku || '';
+    const supplierProductId = getMappedValue('product_code') ||
+      rawRow._supplierProductId ||
+      toStr(raw('productId', 'Product ID')) || '';
+
+    const supplierSku = getMappedValue('supplier_sku') ||
+      rawRow._supplierSku ||
+      toStr(raw('sku', 'SKU')) || '';
 
     const productCode = supplierProductId ||
-                        rawRow['Product ID'] ||
+                        toStr(raw('productId', 'Product ID')) ||
                         `PROD-${Date.now()}-${index}`;
 
-    const priceStr = getMappedValue('price') || rawRow.Price || '';
+    const priceStr = getMappedValue('price') ||
+      toStr(raw('price', 'Price')) || '';
     const price = parsePrice(priceStr);
 
-    const primaryImages = getMappedValue('images') || rawRow.Images || '';
+    // Images: rawRow.images may be an array (from extractProduct)
+    const rawImages = raw('images', 'Images');
+    const primaryImages = getMappedValue('images') ||
+      (Array.isArray(rawImages) ? rawImages.join(',') : toStr(rawImages)) || '';
     const additionalImages = getMappedValue('additional_images') || '';
     const allImages = [primaryImages, additionalImages]
       .filter(i => i)
       .join(',')
-      .split(/[,|||]+/)
-      .map(i => i.trim())
+      .split(/[,|]+/)
+      .map(i => i.replace(/^\|+|\|+$/g, '').trim())
       .filter(i => i && i.startsWith('http'));
 
-    const shippingCostValue = parsePrice(getMappedValue('shipping_cost') || '');
+    const shippingCostValue = parsePrice(
+      getMappedValue('shipping_cost') ||
+      toStr(raw('shippingCost', 'Shipping Cost')) || ''
+    );
+
+    // Variants: rawRow.variants may be an array
+    const rawVariants = raw('variants', 'Variants');
+    const variantsStr = getMappedValue('variants') ||
+      (Array.isArray(rawVariants) ? JSON.stringify(rawVariants) : toStr(rawVariants)) || '';
+
+    const rawVariantGroups = raw('variantGroups', 'Variant Groups');
+    const variantGroupsStr = Array.isArray(rawVariantGroups)
+      ? JSON.stringify(rawVariantGroups)
+      : toStr(rawVariantGroups);
+
+    // Reviews: rawRow.reviews may be an array
+    const rawReviews = raw('reviews', 'Reviews');
+    const reviewsStr = getMappedValue('reviews') ||
+      (Array.isArray(rawReviews) ? JSON.stringify(rawReviews) : toStr(rawReviews)) ||
+      toStr(rawRow['Review Text']) || '';
+
+    // Specifications: may be an array
+    const rawSpecs = raw('specifications', 'Specifications');
+    const specificationsStr = getMappedValue('specifications') ||
+      (Array.isArray(rawSpecs) ? JSON.stringify(rawSpecs) : toStr(rawSpecs)) || '';
+
+    // Video URLs: may be an array
+    const rawVideos = raw('videoUrls', 'Video URLs');
+    const videoUrlsStr = getMappedValue('video_urls') ||
+      (Array.isArray(rawVideos) ? rawVideos.join(',') : toStr(rawVideos)) || '';
 
     return {
-      productCode: productCode,
-      supplierProductId: supplierProductId,
-      supplierSku: supplierSku,
-      title: getMappedValue('product_name') || rawRow.Title || 'Untitled Product',
+      productCode,
+      supplierProductId,
+      supplierSku,
+      title: getMappedValue('product_name') ||
+        toStr(raw('title', 'Title')) || 'Untitled Product',
       supplierPrice: price,
       yourPrice: calculateSellingPrice(price, shippingCostValue),
-      listPrice: parsePrice(getMappedValue('list_price') || rawRow['List Price'] || ''),
-      stock: parseInt(getMappedValue('quantity')) || 999,
-      category: getMappedValue('category') || state.settings?.defaultCategory || '',
-      description: getMappedValue('description') || rawRow.Description || '',
-      shortDescription: getMappedValue('short_description') || '',
+      listPrice: parsePrice(
+        getMappedValue('list_price') ||
+        toStr(raw('originalPrice', 'Original Price')) ||
+        toStr(rawRow['List Price']) || ''
+      ),
+      stock: parseInt(getMappedValue('quantity')) ||
+        parseInt(toStr(raw('stock', 'Stock'))) || 999,
+      category: getMappedValue('category') ||
+        toStr(raw('category', 'Category')) ||
+        state.settings?.defaultCategory || '',
+      description: getMappedValue('description') ||
+        toStr(raw('description', 'Description')) ||
+        toStr(raw('descriptionText', null)) || '',
+      shortDescription: getMappedValue('short_description') ||
+        toStr(raw('shortDescription', 'Short Description')) || '',
+      fullDescription: getMappedValue('full_description') ||
+        toStr(raw('fullDescription', 'Full Description')) || '',
       images: allImages.length > 0 ? allImages.join(',') : '',
-      supplierUrl: getMappedValue('url') || findProductUrl() || rawRow.URL || state.tabUrl,
-      domain: state.tabDomain || new URL(state.tabUrl || 'http://unknown').hostname,
-      variants: getMappedValue('variants') || rawRow.Variants || rawRow.variants || '',
+      supplierUrl: getMappedValue('url') ||
+        findProductUrl() ||
+        toStr(rawRow.URL) || state.tabUrl,
+      domain: state.tabDomain ||
+        (() => { try { return new URL(state.tabUrl || 'http://unknown').hostname; } catch(e) { return 'unknown'; } })(),
+      variants: variantsStr,
+      variantGroups: variantGroupsStr,
       color: getMappedValue('color') || '',
       size: getMappedValue('size') || '',
-      shipping: getMappedValue('shipping') || rawRow.Shipping || '',
+      shipping: getMappedValue('shipping') ||
+        toStr(raw('shipping', 'Shipping')) ||
+        toStr(raw('shippingText', null)) || '',
       shippingCost: shippingCostValue,
-      brand: getMappedValue('brand') || rawRow.Brand || '',
-      rating: getMappedValue('rating') || rawRow.Rating || '',
-      reviewCount: getMappedValue('review_count') || rawRow.Reviews || rawRow['Review Count'] || '',
-      soldCount: getMappedValue('sold_count') || rawRow['Sold'] || rawRow['Orders'] || '',
-      reviews: getMappedValue('reviews') || rawRow.Reviews || rawRow.reviews || rawRow['Review Text'] || '',
-      storeName: getMappedValue('store_name') || '',
-      storeRating: getMappedValue('store_rating') || '',
-      meta_keywords: getMappedValue('meta_keywords') || '',
-      meta_description: getMappedValue('meta_description') || '',
+      brand: getMappedValue('brand') ||
+        toStr(raw('brand', 'Brand')) || '',
+      rating: getMappedValue('rating') ||
+        toStr(raw('rating', 'Rating')) || '',
+      reviewCount: getMappedValue('review_count') ||
+        toStr(raw('reviewCount', 'Review Count')) ||
+        toStr(raw('review_count', null)) || '',
+      soldCount: getMappedValue('sold_count') ||
+        toStr(raw('soldCount', 'Sold')) ||
+        toStr(raw('orders', 'Orders')) || '',
+      reviews: reviewsStr,
+      storeName: getMappedValue('store_name') ||
+        toStr(raw('storeName', 'Store')) ||
+        toStr(raw('store_name', null)) || '',
+      storeRating: getMappedValue('store_rating') ||
+        toStr(raw('storeRating', 'Store Rating')) || '',
+      metaKeywords: getMappedValue('meta_keywords') ||
+        toStr(raw('metaKeywords', 'Meta Keywords')) || '',
+      metaDescription: getMappedValue('meta_description') ||
+        toStr(raw('metaDescription', 'Meta Description')) || '',
       attributes: getMappedValue('attributes') || '',
-      specifications: getMappedValue('specifications') || rawRow.Specifications || '',
-      minOrder: getMappedValue('min_order') || '',
-      videoUrls: getMappedValue('video_urls') || rawRow['Video URLs'] || '',
-      fullDescription: getMappedValue('full_description') || rawRow['Full Description'] || ''
+      specifications: specificationsStr,
+      minOrder: getMappedValue('min_order') ||
+        toStr(raw('minOrder', 'Min Order')) || '',
+      videoUrls: videoUrlsStr,
+      sku: supplierSku || toStr(raw('sku', 'SKU')) || '',
+      currency: toStr(raw('currency', 'Currency')) || 'USD',
+      weight: toStr(raw('weight', 'Weight')) || ''
     };
   });
 

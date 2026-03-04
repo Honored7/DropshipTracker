@@ -202,6 +202,18 @@ function _handleExtractedProduct(response) {
         ? SanitizeService.sanitizeProduct(response)
         : response;
 
+      // If the table currently holds non-product rows (generic Find-Tables
+      // scrape, no 'Product ID' column), clear them so the product rows
+      // don't merge with a completely different column schema and produce
+      // the "two tables side by side" visual artefact.
+      const hasGenericRows = state.data.length > 0 &&
+        !state.data.some(r => 'Product ID' in r);
+      if (hasGenericRows) {
+        state.data = [];
+        state.rawData = [];
+        state.fieldNames = [];
+      }
+
       const row = {
         'Product ID': sanitized.productId || '',
         'Title': sanitized.title || '',
